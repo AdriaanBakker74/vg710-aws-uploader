@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Docker
+*.tar
+
+# Secrets / config
+/data/
+*.json
+
+# macOS
+.DS_Store
