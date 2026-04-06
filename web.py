@@ -4,6 +4,8 @@ import os
 import socket
 import subprocess
 import tempfile
+import threading
+import time
 import zipfile
 
 from flask import Flask, redirect, render_template_string, request, send_file, url_for
@@ -15,6 +17,60 @@ BASE_DIR = "/data/vgapp"
 CERT_DIR = os.path.join(BASE_DIR, "certs")
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(CERT_DIR, exist_ok=True)
+
+# --- Systeem statistieken (CPU + geheugen) ---
+_sys_stats = {"cpu_percent": None, "mem_used_mb": None, "mem_total_mb": None,
+              "mem_percent": None, "load_1": None, "load_5": None}
+_sys_stats_lock = threading.Lock()
+
+
+def _sys_stats_loop():
+    def read_cpu_stat():
+        with open("/proc/stat") as f:
+            parts = f.readline().split()[1:]
+        vals = list(map(int, parts))
+        return vals[3], sum(vals)
+
+    while True:
+        try:
+            idle1, total1 = read_cpu_stat()
+            time.sleep(1)
+            idle2, total2 = read_cpu_stat()
+            dt = total2 - total1
+            cpu = round((1 - (idle2 - idle1) / dt) * 100) if dt else 0
+
+            mem = {}
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    p = line.split()
+                    if len(p) >= 2:
+                        mem[p[0].rstrip(":")] = int(p[1])
+            total_kb = mem.get("MemTotal", 0)
+            used_kb = total_kb - mem.get("MemAvailable", 0)
+
+            with open("/proc/loadavg") as f:
+                load = f.read().split()
+
+            with _sys_stats_lock:
+                _sys_stats.update({
+                    "cpu_percent": cpu,
+                    "mem_used_mb": round(used_kb / 1024),
+                    "mem_total_mb": round(total_kb / 1024),
+                    "mem_percent": round(used_kb / total_kb * 100) if total_kb else 0,
+                    "load_1": float(load[0]),
+                    "load_5": float(load[1]),
+                })
+        except Exception:
+            pass
+        time.sleep(4)
+
+
+threading.Thread(target=_sys_stats_loop, daemon=True).start()
+
+
+def system_stats():
+    with _sys_stats_lock:
+        return dict(_sys_stats)
 
 HTML = """
 <!DOCTYPE html>
@@ -302,6 +358,7 @@ HTML = """
     <section class="hero">
       <div>
         <h1>VG710 Control Panel</h1>
+        <p><h2>Bakker Machine Control </h2>
         <p>Configuratie, certificaten, CAN upload rates, AWS-status en container shell in één overzicht.</p>
         {% if device_id %}
         <p style="margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.75);">
@@ -499,6 +556,41 @@ HTML = """
             {% else %}
               Nog geen uploads
             {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top: 20px;">
+      <h2>Systeemstatus</h2>
+      <p class="sub">CPU- en geheugengebruik van de VG710 container. Wordt elke 5 seconden bijgewerkt.</p>
+      <div class="status-grid" style="grid-template-columns: repeat(3, minmax(0,1fr));">
+        <div class="status-item">
+          <strong>CPU gebruik</strong>
+          <div style="margin-top:6px;">
+            <div style="background:#e9eef5;border-radius:999px;height:10px;overflow:hidden;">
+              <div id="cpu-bar" style="height:10px;border-radius:999px;transition:width 0.5s;width:{{ sys.cpu_percent or 0 }}%;background:{% if (sys.cpu_percent or 0) > 80 %}var(--bad-text){% elif (sys.cpu_percent or 0) > 50 %}#e6a817{% else %}var(--ok-text){% endif %};"></div>
+            </div>
+            <div class="muted" id="cpu-text" style="margin-top:4px;font-size:13px;">
+              {% if sys.cpu_percent is not none %}{{ sys.cpu_percent }}%{% else %}—{% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Geheugen</strong>
+          <div style="margin-top:6px;">
+            <div style="background:#e9eef5;border-radius:999px;height:10px;overflow:hidden;">
+              <div id="mem-bar" style="height:10px;border-radius:999px;transition:width 0.5s;width:{{ sys.mem_percent or 0 }}%;background:{% if (sys.mem_percent or 0) > 80 %}var(--bad-text){% elif (sys.mem_percent or 0) > 50 %}#e6a817{% else %}var(--ok-text){% endif %};"></div>
+            </div>
+            <div class="muted" id="mem-text" style="margin-top:4px;font-size:13px;">
+              {% if sys.mem_used_mb is not none %}{{ sys.mem_used_mb }} / {{ sys.mem_total_mb }} MB ({{ sys.mem_percent }}%){% else %}—{% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Load average</strong>
+          <div class="muted" id="load-text" style="margin-top:6px;font-size:13px;">
+            {% if sys.load_1 is not none %}1m: {{ sys.load_1 }} &nbsp;·&nbsp; 5m: {{ sys.load_5 }}{% else %}—{% endif %}
           </div>
         </div>
       </div>
@@ -716,6 +808,27 @@ HTML = """
           nmeaEl.innerHTML = n.last_upload
             ? n.total_uploads + ' uploads · ' + n.total_records + ' records<br><small>Laatste: ' + n.last_upload.slice(0,19).replace('T',' ') + '</small>'
             : 'Nog geen uploads';
+        }
+
+        if (data.sys) {
+          const s = data.sys;
+          const cpuBar = document.getElementById('cpu-bar');
+          const cpuText = document.getElementById('cpu-text');
+          const memBar = document.getElementById('mem-bar');
+          const memText = document.getElementById('mem-text');
+          const loadText = document.getElementById('load-text');
+          if (cpuBar && s.cpu_percent !== null) {
+            cpuBar.style.width = s.cpu_percent + '%';
+            cpuBar.style.background = s.cpu_percent > 80 ? 'var(--bad-text)' : s.cpu_percent > 50 ? '#e6a817' : 'var(--ok-text)';
+            if (cpuText) cpuText.textContent = s.cpu_percent + '%';
+          }
+          if (memBar && s.mem_percent !== null) {
+            memBar.style.width = s.mem_percent + '%';
+            memBar.style.background = s.mem_percent > 80 ? 'var(--bad-text)' : s.mem_percent > 50 ? '#e6a817' : 'var(--ok-text)';
+            if (memText) memText.textContent = s.mem_used_mb + ' / ' + s.mem_total_mb + ' MB (' + s.mem_percent + '%)';
+          }
+          if (loadText && s.load_1 !== null)
+            loadText.innerHTML = '1m: ' + s.load_1 + ' &nbsp;·&nbsp; 5m: ' + s.load_5;
         }
 
         if (data.gnss) {
@@ -1170,6 +1283,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         device_id=cfg.get("device_id"),
         asset_id=cfg.get("asset_id"),
         app_version=os.environ.get("APP_VERSION", "onbekend"),
+        sys=system_stats(),
         shell_command=shell_command,
         shell_output=shell_output,
         range=range,
@@ -1194,6 +1308,7 @@ def status_json():
         "rate_rows": build_rate_rows(),
         "s3_status": s3_status_data(),
         "gnss": gnss_status_data(),
+        "sys": system_stats(),
     }
 
 
