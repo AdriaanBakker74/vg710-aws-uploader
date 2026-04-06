@@ -1197,12 +1197,13 @@ def fetch_ntrip_sourcetable(host, port, username, password):
     auth = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
     req = (
         f"GET / HTTP/1.0\r\n"
-        f"User-Agent: VG710-Config\r\n"
+        f"Host: {host}\r\n"
+        f"User-Agent: NTRIP VG710/1.0\r\n"
         f"Authorization: Basic {auth}\r\n"
-        f"Ntrip-Version: Ntrip/2.0\r\n"
         f"Connection: close\r\n\r\n"
     )
     sock = socket.create_connection((host, int(port)), timeout=10)
+    sock.settimeout(10)
     try:
         sock.sendall(req.encode("ascii"))
         raw = b""
@@ -1211,7 +1212,7 @@ def fetch_ntrip_sourcetable(host, port, username, password):
             if not chunk:
                 break
             raw += chunk
-            if len(raw) > 512 * 1024:
+            if b"ENDSOURCETABLE" in raw or len(raw) > 512 * 1024:
                 break
     finally:
         sock.close()
