@@ -301,6 +301,12 @@ HTML = """
       <div>
         <h1>VG710 Control Panel</h1>
         <p>Configuratie, certificaten, CAN upload rates, AWS-status en container shell in één overzicht.</p>
+        {% if device_id %}
+        <p style="margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.75);">
+          Device ID: <strong style="color:#fff;">{{ device_id }}</strong>
+          {% if asset_id %}&nbsp;&nbsp;·&nbsp;&nbsp;Asset ID: <strong style="color:#fff;">{{ asset_id }}</strong>{% endif %}
+        </p>
+        {% endif %}
       </div>
       <div class="hero-actions">
         <a class="button secondary" href="/download_config">Download Config + S3 + Certs</a>
@@ -706,6 +712,7 @@ def run_shell_command(command):
 
 
 def render_page(shell_command="", shell_output="No command executed yet."):
+    cfg = load_config_data()
     return render_template_string(
         HTML,
         config=exists(f"{BASE_DIR}/config.json"),
@@ -717,6 +724,8 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         rate_rows=build_rate_rows(),
         aws_status_text=aws_status_text(),
         s3_status=s3_status_data(),
+        device_id=cfg.get("device_id"),
+        asset_id=cfg.get("asset_id"),
         shell_command=shell_command,
         shell_output=shell_output,
         range=range,
