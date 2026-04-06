@@ -422,16 +422,6 @@ HTML = """
           </div>
         </div>
         <div class="status-item">
-          <strong>Satellieten / HDOP</strong>
-          <div class="muted" id="gnss-sat">
-            {% if gnss.satellites is not none %}
-              {{ gnss.satellites }} sats &nbsp;·&nbsp; HDOP {{ gnss.hdop }}
-            {% else %}
-              —
-            {% endif %}
-          </div>
-        </div>
-        <div class="status-item">
           <strong>Hoogte</strong>
           <div class="muted" id="gnss-alt">
             {% if gnss.altitude is not none %}
@@ -439,6 +429,42 @@ HTML = """
             {% else %}
               —
             {% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Satellieten</strong>
+          <div class="muted" id="gnss-sat">
+            {% if gnss.satellites is not none %}{{ gnss.satellites }}{% else %}—{% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>HDOP / VDOP / PDOP</strong>
+          <div class="muted" id="gnss-dop">
+            {% if gnss.hdop is not none %}
+              H: {{ gnss.hdop }}
+              &nbsp;·&nbsp; V: {{ gnss.vdop if gnss.vdop is not none else '—' }}
+              &nbsp;·&nbsp; P: {{ gnss.pdop if gnss.pdop is not none else '—' }}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Nauwkeurigheid (1σ)</strong>
+          <div class="muted" id="gnss-acc">
+            {% if gnss.acc_lat is not none %}
+              N: {{ "%.3f"|format(gnss.acc_lat) }} m<br>
+              E: {{ "%.3f"|format(gnss.acc_lon) }} m<br>
+              H: {{ "%.3f"|format(gnss.acc_alt) if gnss.acc_alt is not none else '—' }} m
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Laatste update</strong>
+          <div class="muted" id="gnss-ts">
+            {% if gnss.ts %}{{ gnss.ts[:19] | replace("T"," ") }}{% else %}—{% endif %}
           </div>
         </div>
       </div>
@@ -691,11 +717,18 @@ HTML = """
           const coordEl = document.getElementById('gnss-coords');
           if (coordEl) coordEl.innerHTML = (g.lat !== null && g.lon !== null)
             ? g.lat.toFixed(8) + '<br>' + g.lon.toFixed(8) : '—';
-          const satEl = document.getElementById('gnss-sat');
-          if (satEl) satEl.innerHTML = g.satellites !== null
-            ? g.satellites + ' sats &nbsp;·&nbsp; HDOP ' + g.hdop : '—';
           const altEl = document.getElementById('gnss-alt');
           if (altEl) altEl.textContent = g.altitude !== null ? g.altitude + ' m' : '—';
+          const satEl = document.getElementById('gnss-sat');
+          if (satEl) satEl.textContent = g.satellites !== null ? g.satellites : '—';
+          const dopEl = document.getElementById('gnss-dop');
+          if (dopEl) dopEl.innerHTML = g.hdop !== null
+            ? 'H: ' + g.hdop + ' &nbsp;·&nbsp; V: ' + (g.vdop ?? '—') + ' &nbsp;·&nbsp; P: ' + (g.pdop ?? '—') : '—';
+          const accEl = document.getElementById('gnss-acc');
+          if (accEl) accEl.innerHTML = g.acc_lat !== null
+            ? 'N: ' + g.acc_lat.toFixed(3) + ' m<br>E: ' + g.acc_lon.toFixed(3) + ' m<br>H: ' + (g.acc_alt !== null ? g.acc_alt.toFixed(3) + ' m' : '—') : '—';
+          const tsEl = document.getElementById('gnss-ts');
+          if (tsEl) tsEl.textContent = g.ts ? g.ts.slice(0,19).replace('T',' ') : '—';
         }
       } catch (e) {
         // ignore polling errors

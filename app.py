@@ -173,8 +173,14 @@ S3_CAN_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_
 S3_NMEA_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
 
 GNSS_LOCK = threading.Lock()
-GNSS_STATUS = {"fix_quality": 0, "fix_label": "No fix", "lat": None, "lon": None,
-               "satellites": None, "hdop": None, "altitude": None, "ts": None}
+GNSS_STATUS = {
+    "fix_quality": 0, "fix_label": "Geen fix",
+    "lat": None, "lon": None, "satellites": None,
+    "hdop": None, "vdop": None, "pdop": None,
+    "altitude": None,
+    "acc_lat": None, "acc_lon": None, "acc_alt": None,
+    "ts": None,
+}
 
 
 def now():
@@ -273,13 +279,56 @@ def parse_gga(sentence):
         return None
 
 
+def parse_gsa(sentence):
+    """GSA: PDOP, HDOP, VDOP."""
+    try:
+        if "*" in sentence:
+            sentence = sentence[: sentence.index("*")]
+        parts = sentence.split(",")
+        if len(parts) < 17 or not parts[0].endswith("GSA"):
+            return None
+        return {
+            "pdop": float(parts[15]) if parts[15] else None,
+            "hdop": float(parts[16]) if parts[16] else None,
+            "vdop": float(parts[17]) if len(parts) > 17 and parts[17] else None,
+        }
+    except Exception:
+        return None
+
+
+def parse_gst(sentence):
+    """GST: positienauwkeurigheid in meters (1-sigma)."""
+    try:
+        if "*" in sentence:
+            sentence = sentence[: sentence.index("*")]
+        parts = sentence.split(",")
+        if len(parts) < 8 or not parts[0].endswith("GST"):
+            return None
+        return {
+            "acc_lat": float(parts[6]) if parts[6] else None,
+            "acc_lon": float(parts[7]) if parts[7] else None,
+            "acc_alt": float(parts[8]) if len(parts) > 8 and parts[8] else None,
+        }
+    except Exception:
+        return None
+
+
 def update_gnss_status(sentence, ts):
-    parsed = parse_gga(sentence)
+    parsed = None
+    if "GGA" in sentence:
+        parsed = parse_gga(sentence)
+    elif "GSA" in sentence:
+        parsed = parse_gsa(sentence)
+    elif "GST" in sentence:
+        parsed = parse_gst(sentence)
+
     if parsed is None:
         return
+
     with GNSS_LOCK:
         GNSS_STATUS.update(parsed)
         GNSS_STATUS["ts"] = ts
+
     try:
         with GNSS_LOCK:
             payload = dict(GNSS_STATUS)
@@ -738,7 +787,7 @@ def nmea_reader_loop(source):
                 if not line:
                     continue
                 ts = now()
-                if "GGA" in line:
+                if "GGA" in line or "GSA" in line or "GST" in line:
                     update_gnss_status(line, ts)
                 append_nmea_record(
                     {
