@@ -1,6 +1,8 @@
 
+import base64
 import json
 import os
+import socket
 import threading
 import time
 from datetime import datetime, timezone
@@ -57,8 +59,69 @@ S3_PREFIX = cfg.get("s3_prefix", "vg710-raw")
 S3_REGION = cfg.get("s3_region")
 S3_FLUSH_INTERVAL_SEC = int(cfg.get("s3_flush_interval_sec", 30))
 S3_BATCH_SIZE = int(cfg.get("s3_batch_size", 100))
+S3_NMEA_BATCH_SIZE = int(cfg.get("s3_nmea_batch_size", 100))
+S3_NMEA_FLUSH_INTERVAL_SEC = int(cfg.get("s3_nmea_flush_interval_sec", 30))
 
 CAN_RATES = cfg.get("can_upload_rates", [])
+NTRIP_CFG = cfg.get("ntrip", {})
+SEPTENTRIO_CFG = cfg.get("septentrio", {})
+
+NTRIP_ENABLED = bool(NTRIP_CFG.get("enabled", False))
+NTRIP_HOST = NTRIP_CFG.get("host", "").strip()
+NTRIP_PORT = int(NTRIP_CFG.get("port", 2101) or 2101)
+NTRIP_MOUNTPOINT = NTRIP_CFG.get("mountpoint", "").strip()
+NTRIP_USERNAME = NTRIP_CFG.get("username", "").strip()
+NTRIP_PASSWORD = NTRIP_CFG.get("password", "")
+SEPTENTRIO_IP = SEPTENTRIO_CFG.get("ip", "192.168.127.250").strip() or "192.168.127.250"
+SEPTENTRIO_RTCM_PORT = int(SEPTENTRIO_CFG.get("port", 28784) or 28784)
+NTRIP_RECONNECT_SEC = int(NTRIP_CFG.get("reconnect_sec", 5) or 5)
+
+
+def build_nmea_sources():
+    sources = []
+
+    configured = SEPTENTRIO_CFG.get("nmea_sources", [])
+    if isinstance(configured, list):
+        for idx, item in enumerate(configured):
+            if not isinstance(item, dict):
+                continue
+            port = item.get("port")
+            if not port:
+                continue
+            try:
+                port = int(port)
+            except Exception:
+                continue
+            sources.append(
+                {
+                    "name": item.get("name", f"nmea_{idx + 1}"),
+                    "host": item.get("host", SEPTENTRIO_IP) or SEPTENTRIO_IP,
+                    "port": port,
+                }
+            )
+
+    if sources:
+        return sources
+
+    legacy_ports = SEPTENTRIO_CFG.get("nmea_ports", [])
+    if isinstance(legacy_ports, list):
+        for idx, port in enumerate(legacy_ports):
+            try:
+                port = int(port)
+            except Exception:
+                continue
+            sources.append(
+                {
+                    "name": f"nmea_{idx + 1}",
+                    "host": SEPTENTRIO_IP,
+                    "port": port,
+                }
+            )
+
+    return sources
+
+
+NMEA_SOURCES = build_nmea_sources()
 
 
 def parse_can_id(value):
@@ -91,6 +154,10 @@ MQTT_CONNECTED = False
 S3_BUFFER = []
 S3_LAST_FLUSH = time.time()
 S3_CLIENT = boto3.client("s3", region_name=S3_REGION) if S3_BUCKET else None
+
+NMEA_LOCK = threading.Lock()
+NMEA_BUFFER = []
+NMEA_LAST_FLUSH = time.time()
 
 
 def now():
@@ -125,6 +192,19 @@ def save_aws_status(connected, message):
             json.dump(payload, f, indent=2)
     except Exception as e:
         print(f"Error saving AWS status: {e}", flush=True)
+
+
+def upload_batch_to_s3(key, batch):
+    if not S3_CLIENT or not S3_BUCKET or not batch:
+        return
+
+    body = "\n".join(json.dumps(item, separators=(",", ":")) for item in batch) + "\n"
+    S3_CLIENT.put_object(
+        Bucket=S3_BUCKET,
+        Key=key,
+        Body=body.encode("utf-8"),
+        ContentType="application/x-ndjson",
+    )
 
 
 def append_s3_record(payload):
@@ -165,22 +245,66 @@ def flush_s3_buffer(force=False):
     ts_part = first_ts.replace(":", "-")
     date_part = first_ts[:10]
     hour_part = first_ts[11:13] if len(first_ts) >= 13 else "00"
-    key = f"{S3_PREFIX}/{DEVICE_ID}/{date_part}/{hour_part}/{ts_part}.ndjson"
-    body = "\n".join(json.dumps(item, separators=(",", ":")) for item in batch) + "\n"
+    key = f"{S3_PREFIX}/{DEVICE_ID}/can/{date_part}/{hour_part}/{ts_part}.ndjson"
 
     try:
-        S3_CLIENT.put_object(
-            Bucket=S3_BUCKET,
-            Key=key,
-            Body=body.encode("utf-8"),
-            ContentType="application/x-ndjson",
-        )
+        upload_batch_to_s3(key, batch)
         save_aws_status(True, f"s3 upload ok: {key}")
     except Exception as e:
         save_aws_status(False, f"s3 upload error: {e}")
         print(f"S3 upload error: {e}", flush=True)
         with LOCK:
             S3_BUFFER[:0] = batch
+
+
+def append_nmea_record(payload):
+    global NMEA_LAST_FLUSH
+    if not S3_CLIENT or not S3_BUCKET:
+        return
+
+    with NMEA_LOCK:
+        NMEA_BUFFER.append(payload)
+        should_flush = (
+            len(NMEA_BUFFER) >= S3_NMEA_BATCH_SIZE
+            or (time.time() - NMEA_LAST_FLUSH) >= S3_NMEA_FLUSH_INTERVAL_SEC
+        )
+
+    if should_flush:
+        flush_nmea_buffer()
+
+
+def flush_nmea_buffer(force=False):
+    global NMEA_LAST_FLUSH
+    if not S3_CLIENT or not S3_BUCKET:
+        return
+
+    with NMEA_LOCK:
+        if not NMEA_BUFFER:
+            return
+        if (
+            not force
+            and len(NMEA_BUFFER) < S3_NMEA_BATCH_SIZE
+            and (time.time() - NMEA_LAST_FLUSH) < S3_NMEA_FLUSH_INTERVAL_SEC
+        ):
+            return
+        batch = list(NMEA_BUFFER)
+        NMEA_BUFFER.clear()
+        NMEA_LAST_FLUSH = time.time()
+
+    first_ts = batch[0].get("ts", now())
+    ts_part = first_ts.replace(":", "-")
+    date_part = first_ts[:10]
+    hour_part = first_ts[11:13] if len(first_ts) >= 13 else "00"
+    key = f"{S3_PREFIX}/{DEVICE_ID}/nmea/{date_part}/{hour_part}/{ts_part}.ndjson"
+
+    try:
+        upload_batch_to_s3(key, batch)
+        save_aws_status(True, f"s3 upload ok: {key}")
+    except Exception as e:
+        save_aws_status(False, f"s3 upload error: {e}")
+        print(f"S3 upload error: {e}", flush=True)
+        with NMEA_LOCK:
+            NMEA_BUFFER[:0] = batch
 
 
 client = mqtt.Client(client_id=DEVICE_ID, protocol=mqtt.MQTTv311)
@@ -327,13 +451,147 @@ def can_publisher_loop():
 def s3_flush_loop():
     while True:
         flush_s3_buffer()
+        flush_nmea_buffer()
         time.sleep(1)
+
+
+def connect_ntrip_socket():
+    if not (NTRIP_HOST and NTRIP_MOUNTPOINT):
+        raise RuntimeError("NTRIP host or mountpoint is not configured")
+
+    sock = socket.create_connection((NTRIP_HOST, NTRIP_PORT), timeout=15)
+    auth = base64.b64encode(f"{NTRIP_USERNAME}:{NTRIP_PASSWORD}".encode("utf-8")).decode("ascii")
+    request = (
+        f"GET /{NTRIP_MOUNTPOINT} HTTP/1.0\r\n"
+        f"User-Agent: VG710-NTRIP\r\n"
+        f"Authorization: Basic {auth}\r\n"
+        f"Ntrip-Version: Ntrip/2.0\r\n"
+        f"Connection: close\r\n\r\n"
+    )
+    sock.sendall(request.encode("ascii"))
+
+    response = b""
+    while b"\r\n\r\n" not in response and len(response) < 8192:
+        chunk = sock.recv(1024)
+        if not chunk:
+            break
+        response += chunk
+
+    header = response.decode("latin1", errors="ignore")
+    if not (
+        "200 OK" in header
+        or "ICY 200 OK" in header
+        or header.startswith("ICY 200")
+    ):
+        sock.close()
+        raise RuntimeError(f"NTRIP connect failed: {header.strip()}")
+
+    return sock, response.split(b"\r\n\r\n", 1)[1]
+
+
+def relay_ntrip_loop():
+    if not NTRIP_ENABLED:
+        print("NTRIP disabled; relay loop not started", flush=True)
+        return
+
+    while True:
+        ntrip_sock = None
+        sept_sock = None
+        try:
+            print(
+                f"Connecting NTRIP caster {NTRIP_HOST}:{NTRIP_PORT}/{NTRIP_MOUNTPOINT}",
+                flush=True,
+            )
+            ntrip_sock, initial_payload = connect_ntrip_socket()
+            sept_sock = socket.create_connection((SEPTENTRIO_IP, SEPTENTRIO_RTCM_PORT), timeout=15)
+            print(
+                f"Forwarding RTCM to Septentrio {SEPTENTRIO_IP}:{SEPTENTRIO_RTCM_PORT}",
+                flush=True,
+            )
+
+            if initial_payload:
+                sept_sock.sendall(initial_payload)
+
+            while True:
+                data = ntrip_sock.recv(4096)
+                if not data:
+                    raise RuntimeError("NTRIP stream closed")
+                sept_sock.sendall(data)
+        except Exception as e:
+            print(f"NTRIP relay error: {e}", flush=True)
+        finally:
+            try:
+                if ntrip_sock:
+                    ntrip_sock.close()
+            except Exception:
+                pass
+            try:
+                if sept_sock:
+                    sept_sock.close()
+            except Exception:
+                pass
+
+        time.sleep(NTRIP_RECONNECT_SEC)
+
+
+def nmea_reader_loop(source):
+    host = source["host"]
+    port = source["port"]
+    name = source["name"]
+
+    while True:
+        sock = None
+        file_obj = None
+        try:
+            print(f"Connecting NMEA source {name} at {host}:{port}", flush=True)
+            sock = socket.create_connection((host, port), timeout=15)
+            sock.settimeout(60)
+            file_obj = sock.makefile("r", encoding="ascii", errors="ignore", newline="\n")
+
+            while True:
+                line = file_obj.readline()
+                if not line:
+                    raise RuntimeError("NMEA stream closed")
+                line = line.strip()
+                if not line:
+                    continue
+                append_nmea_record(
+                    {
+                        "device_id": DEVICE_ID,
+                        "source": name,
+                        "host": host,
+                        "port": port,
+                        "sentence": line,
+                        "ts": now(),
+                    }
+                )
+        except Exception as e:
+            print(f"NMEA reader error for {name}: {e}", flush=True)
+        finally:
+            try:
+                if file_obj:
+                    file_obj.close()
+            except Exception:
+                pass
+            try:
+                if sock:
+                    sock.close()
+            except Exception:
+                pass
+
+        time.sleep(5)
 
 
 threading.Thread(target=heartbeat, daemon=True).start()
 threading.Thread(target=can_reader_loop, daemon=True).start()
 threading.Thread(target=can_publisher_loop, daemon=True).start()
 threading.Thread(target=s3_flush_loop, daemon=True).start()
+
+if NTRIP_ENABLED:
+    threading.Thread(target=relay_ntrip_loop, daemon=True).start()
+
+for source in NMEA_SOURCES:
+    threading.Thread(target=nmea_reader_loop, args=(source,), daemon=True).start()
 
 try:
     while True:
@@ -342,6 +600,7 @@ except KeyboardInterrupt:
     pass
 finally:
     flush_s3_buffer(force=True)
+    flush_nmea_buffer(force=True)
     client.publish(
         STATUS_TOPIC,
         payload=json.dumps({"device_id": DEVICE_ID, "status": "stopping", "ts": now()}),
@@ -350,375 +609,3 @@ finally:
     )
     client.loop_stop()
     client.disconnect()
-
-import json
-import os
-
-from flask import Flask, redirect, render_template_string, request, url_for
-from werkzeug.utils import secure_filename
-
-app = Flask(__name__)
-
-BASE_DIR = "/data/vgapp"
-CERT_DIR = os.path.join(BASE_DIR, "certs")
-os.makedirs(BASE_DIR, exist_ok=True)
-os.makedirs(CERT_DIR, exist_ok=True)
-
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-  <title>VG710 Config Upload</title>
-  <meta http-equiv="refresh" content="30">
-</head>
-<body>
-  <h1>VG710 Config Upload</h1>
-  <div id="aws-status" style="margin: 12px 0; padding: 10px; border: 1px solid #999; display: inline-block;">
-    AWS status: <strong>{{ aws_status_text }}</strong>
-  </div>
-
-  <h2>Upload Config</h2>
-  <form method="post" enctype="multipart/form-data" action="/upload_config">
-    <input type="file" name="file">
-    <input type="submit" value="Upload">
-  </form>
-
-  <h2>Upload Certs</h2>
-  <form method="post" enctype="multipart/form-data" action="/upload_cert">
-    <input type="file" name="file">
-    <input type="submit" value="Upload">
-  </form>
-
-  <h2>CAN Update Rates</h2>
-  <form method="post" action="/save_rates">
-    <table border="1" cellpadding="6" cellspacing="0">
-      <tr>
-        <th>CAN ID</th>
-        <th>Interval (sec)</th>
-      </tr>
-      {% if rate_rows %}
-        {% for row in rate_rows %}
-        <tr>
-          <td><input type="text" name="can_id_{{ loop.index0 }}" value="{{ row.can_id }}"></td>
-          <td><input type="number" min="1" name="interval_{{ loop.index0 }}" value="{{ row.interval_sec }}"></td>
-        </tr>
-        {% endfor %}
-      {% else %}
-        <tr>
-          <td><input type="text" name="can_id_0" value=""></td>
-          <td><input type="number" min="1" name="interval_0" value="1"></td>
-        </tr>
-      {% endif %}
-      {% for idx in range(3) %}
-      <tr>
-        <td><input type="text" name="new_can_id_{{ idx }}" value=""></td>
-        <td><input type="number" min="1" name="new_interval_{{ idx }}" value="1"></td>
-      </tr>
-      {% endfor %}
-    </table>
-    <p><small>Gebruik CAN ID in decimaal of hex, bijvoorbeeld 914 of 0x392.</small></p>
-    <input type="submit" value="Save CAN Rates">
-  </form>
-
-  <h2>Detected CAN IDs</h2>
-  <ul>
-  {% for cid in can_ids %}
-    <li>
-      {% if cid.id_hex is defined %}
-        {{ cid.id_hex }}
-      {% elif cid.id is defined %}
-        {{ cid.id }}
-      {% else %}
-        {{ cid }}
-      {% endif %}
-    </li>
-  {% else %}
-    <li>No CAN IDs detected yet</li>
-  {% endfor %}
-  </ul>
-
-  <h2>Status</h2>
-  <ul>
-  <li>config.json: {{ config }}</li>
-  <li>device.pem.crt: {{ crt }}</li>
-  <li>private.pem.key: {{ key }}</li>
-  <li>AmazonRootCA1.pem: {{ ca }}</li>
-  </ul>
-
-<script>
-async function refreshStatus() {
-  try {
-    const response = await fetch('/status_json', { cache: 'no-store' });
-    if (!response.ok) {
-      return;
-    }
-    const data = await response.json();
-
-    const awsStatus = document.getElementById('aws-status');
-    if (awsStatus) {
-      awsStatus.innerHTML = 'AWS status: <strong>' + data.aws_status_text + '</strong>';
-    }
-  } catch (e) {
-    // ignore polling errors
-  }
-}
-
-setInterval(refreshStatus, 5000);
-</script>
-</body>
-</html>
-"""
-
-
-def exists(path):
-    return "✅" if os.path.exists(path) else "❌"
-
-
-def load_config_data():
-    config_path = f"{BASE_DIR}/config.json"
-    if not os.path.exists(config_path):
-        return {}
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_config_data(data):
-    with open(f"{BASE_DIR}/config.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
-def normalize_can_id(value):
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        if text.lower().startswith("0x"):
-            return hex(int(text, 16))
-        return str(int(text, 10))
-    except ValueError:
-        return None
-
-
-def current_can_rates():
-    config = load_config_data()
-    rates = config.get("can_upload_rates", [])
-    if not isinstance(rates, list):
-        return []
-    return rates
-
-
-def current_can_ids():
-    path = f"{BASE_DIR}/can_ids.json"
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data
-    except Exception:
-        pass
-    return []
-
-
-def build_rate_rows():
-    detected = current_can_ids()
-    config_rates = current_can_rates()
-
-    interval_map = {}
-    for item in config_rates:
-        can_id = item.get("can_id")
-        interval_sec = item.get("interval_sec")
-        if can_id is not None:
-            interval_map[str(can_id)] = interval_sec
-
-    rows = []
-    seen = set()
-
-    for item in detected:
-        can_id = item.get("id_hex") or item.get("id")
-        if can_id is None:
-            continue
-        can_id = str(can_id)
-        seen.add(can_id)
-        rows.append(
-            {
-                "can_id": can_id,
-                "interval_sec": interval_map.get(can_id, item.get("rate_limit_sec") or 1),
-            }
-        )
-
-    for item in config_rates:
-        can_id = item.get("can_id")
-        if can_id is None:
-            continue
-        can_id = str(can_id)
-        if can_id in seen:
-            continue
-        rows.append(
-            {
-                "can_id": can_id,
-                "interval_sec": item.get("interval_sec", 1),
-            }
-        )
-
-    return rows
-
-
-def aws_status_data():
-    path = f"{BASE_DIR}/aws_status.json"
-    if not os.path.exists(path):
-        return {"connected": False, "last_update": None, "message": "unknown"}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {"connected": False, "last_update": None, "message": "unknown"}
-
-
-def aws_status_text():
-    data = aws_status_data()
-    if data.get("connected"):
-        last_update = data.get("last_update") or "n/a"
-        return f"online (last update: {last_update})"
-    message = data.get("message") or "offline"
-    return f"offline ({message})"
-
-
-def get_uploaded_file():
-    if "file" not in request.files:
-        return None, ("No file field in request", 400)
-    uploaded = request.files["file"]
-    if uploaded.filename == "":
-        return None, ("No file selected", 400)
-    return uploaded, None
-
-
-def resolve_cert_target(filename):
-    safe_name = secure_filename(filename)
-    if safe_name == "AmazonRootCA1.pem":
-        return "AmazonRootCA1.pem"
-    if safe_name == "private.pem.key" or safe_name.endswith("-private.pem.key"):
-        return "private.pem.key"
-    if safe_name == "device.pem.crt" or safe_name.endswith("-certificate.pem.crt"):
-        return "device.pem.crt"
-    return None
-
-
-@app.route("/")
-def index():
-    return render_template_string(
-        HTML,
-        config=exists(f"{BASE_DIR}/config.json"),
-        crt=exists(f"{CERT_DIR}/device.pem.crt"),
-        key=exists(f"{CERT_DIR}/private.pem.key"),
-        ca=exists(f"{CERT_DIR}/AmazonRootCA1.pem"),
-        rates=current_can_rates(),
-        can_ids=current_can_ids(),
-        rate_rows=build_rate_rows(),
-        aws_status_text=aws_status_text(),
-        range=range,
-    )
-
-
-@app.route("/status_json")
-def status_json():
-    return {
-        "aws_status_text": aws_status_text(),
-        "config": exists(f"{BASE_DIR}/config.json"),
-        "crt": exists(f"{CERT_DIR}/device.pem.crt"),
-        "key": exists(f"{CERT_DIR}/private.pem.key"),
-        "ca": exists(f"{CERT_DIR}/AmazonRootCA1.pem"),
-        "can_ids": current_can_ids(),
-        "rate_rows": build_rate_rows(),
-    }
-
-
-@app.route("/upload_config", methods=["POST"])
-def upload_config():
-    uploaded, error = get_uploaded_file()
-    if error:
-        return error
-    filename = secure_filename(uploaded.filename)
-    if filename != "config.json":
-        return "Upload the file as config.json", 400
-    uploaded.save(f"{BASE_DIR}/config.json")
-    return redirect(url_for("index"))
-
-
-@app.route("/upload_cert", methods=["POST"])
-def upload_cert():
-    uploaded, error = get_uploaded_file()
-    if error:
-        return error
-    filename = secure_filename(uploaded.filename)
-    if filename == "config.json":
-        uploaded.save(f"{BASE_DIR}/config.json")
-        return redirect(url_for("index"))
-    target_name = resolve_cert_target(filename)
-    if target_name is None:
-        return (
-            "Unknown filename. Use config.json or valid certificate files.",
-            400,
-        )
-    uploaded.save(os.path.join(CERT_DIR, target_name))
-    return redirect(url_for("index"))
-
-
-@app.route("/save_rates", methods=["POST"])
-def save_rates():
-    config = load_config_data()
-    new_rates = []
-
-    index = 0
-    while True:
-        can_id_key = f"can_id_{index}"
-        interval_key = f"interval_{index}"
-        if can_id_key not in request.form:
-            break
-
-        can_id = normalize_can_id(request.form.get(can_id_key, ""))
-        interval_raw = request.form.get(interval_key, "").strip()
-        if can_id and interval_raw:
-            try:
-                interval_sec = int(interval_raw)
-                if interval_sec > 0:
-                    new_rates.append(
-                        {
-                            "can_id": can_id,
-                            "interval_sec": interval_sec,
-                        }
-                    )
-            except ValueError:
-                pass
-        index += 1
-
-    for index in range(3):
-        can_id = normalize_can_id(request.form.get(f"new_can_id_{index}", ""))
-        interval_raw = request.form.get(f"new_interval_{index}", "").strip()
-        if can_id and interval_raw:
-            try:
-                interval_sec = int(interval_raw)
-                if interval_sec > 0:
-                    new_rates.append(
-                        {
-                            "can_id": can_id,
-                            "interval_sec": interval_sec,
-                        }
-                    )
-            except ValueError:
-                pass
-
-    config["can_upload_rates"] = new_rates
-    save_config_data(config)
-    return redirect(url_for("index"))
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
