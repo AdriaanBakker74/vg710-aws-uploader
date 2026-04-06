@@ -396,6 +396,50 @@ HTML = """
     </div>
 
     <section class="card" style="margin-top: 20px;">
+      <h2>GNSS positie</h2>
+      <p class="sub">Laatste ontvangen positie uit de NMEA GGA-stroom. Wordt bijgewerkt zodra een geldig GGA-bericht binnenkomt.</p>
+      <div id="gnss-card" class="status-grid" style="grid-template-columns: repeat(4, minmax(0,1fr));">
+        <div class="status-item">
+          <strong>Fix</strong>
+          {% set fq = gnss.fix_quality %}
+          <span class="pill {{ 'ok' if fq == 4 else ('warn' if fq in (1,2,3,5) else 'bad') }}"
+                style="{{ 'background:var(--warn-bg);color:var(--warn-text);' if fq in (1,2,3,5) else '' }}"
+                id="gnss-fix">{{ gnss.fix_label }}</span>
+        </div>
+        <div class="status-item">
+          <strong>Coördinaten</strong>
+          <div class="muted" id="gnss-coords">
+            {% if gnss.lat is not none and gnss.lon is not none %}
+              {{ "%.8f"|format(gnss.lat) }}<br>{{ "%.8f"|format(gnss.lon) }}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Satellieten / HDOP</strong>
+          <div class="muted" id="gnss-sat">
+            {% if gnss.satellites is not none %}
+              {{ gnss.satellites }} sats &nbsp;·&nbsp; HDOP {{ gnss.hdop }}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>Hoogte</strong>
+          <div class="muted" id="gnss-alt">
+            {% if gnss.altitude is not none %}
+              {{ gnss.altitude }} m
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top: 20px;">
       <h2>AWS IoT & S3 uploads</h2>
       <p class="sub">Live verbindingsstatus en uploadstatistieken per datatype.</p>
       <div id="aws-s3-status" class="status-grid" style="grid-template-columns: repeat(3, minmax(0,1fr));">
@@ -510,6 +554,25 @@ HTML = """
             ? n.total_uploads + ' uploads · ' + n.total_records + ' records<br><small>Laatste: ' + n.last_upload.slice(0,19).replace('T',' ') + '</small>'
             : 'Nog geen uploads';
         }
+
+        if (data.gnss) {
+          const g = data.gnss;
+          const fixEl = document.getElementById('gnss-fix');
+          if (fixEl) {
+            fixEl.textContent = g.fix_label;
+            fixEl.className = 'pill ' + (g.fix_quality === 4 ? 'ok' : (g.fix_quality > 0 ? 'warn' : 'bad'));
+            if (g.fix_quality > 0 && g.fix_quality !== 4) fixEl.style.cssText = 'background:var(--warn-bg);color:var(--warn-text);';
+            else fixEl.style.cssText = '';
+          }
+          const coordEl = document.getElementById('gnss-coords');
+          if (coordEl) coordEl.innerHTML = (g.lat !== null && g.lon !== null)
+            ? g.lat.toFixed(8) + '<br>' + g.lon.toFixed(8) : '—';
+          const satEl = document.getElementById('gnss-sat');
+          if (satEl) satEl.innerHTML = g.satellites !== null
+            ? g.satellites + ' sats &nbsp;·&nbsp; HDOP ' + g.hdop : '—';
+          const altEl = document.getElementById('gnss-alt');
+          if (altEl) altEl.textContent = g.altitude !== null ? g.altitude + ' m' : '—';
+        }
       } catch (e) {
         // ignore polling errors
       }
@@ -620,6 +683,22 @@ def build_rate_rows():
     return rows
 
 
+def gnss_status_data():
+    path = f"{BASE_DIR}/gnss_status.json"
+    default = {"fix_quality": 0, "fix_label": "No fix", "lat": None, "lon": None,
+               "satellites": None, "hdop": None, "altitude": None, "ts": None}
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return default
+
+
 def s3_status_data():
     path = f"{BASE_DIR}/s3_status.json"
     default = {
@@ -724,6 +803,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         rate_rows=build_rate_rows(),
         aws_status_text=aws_status_text(),
         s3_status=s3_status_data(),
+        gnss=gnss_status_data(),
         device_id=cfg.get("device_id"),
         asset_id=cfg.get("asset_id"),
         shell_command=shell_command,
@@ -749,6 +829,7 @@ def status_json():
         "can_ids": current_can_ids(),
         "rate_rows": build_rate_rows(),
         "s3_status": s3_status_data(),
+        "gnss": gnss_status_data(),
     }
 
 

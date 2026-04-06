@@ -18,6 +18,7 @@ CA = f"{BASE}/certs/AmazonRootCA1.pem"
 CAN_IDS_FILE = f"{BASE}/can_ids.json"
 AWS_STATUS_FILE = f"{BASE}/aws_status.json"
 S3_STATUS_FILE = f"{BASE}/s3_status.json"
+GNSS_STATUS_FILE = f"{BASE}/gnss_status.json"
 
 with open(f"{BASE}/config.json", encoding="utf-8") as f:
     cfg = json.load(f)
@@ -164,6 +165,10 @@ S3_STATS_LOCK = threading.Lock()
 S3_CAN_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
 S3_NMEA_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
 
+GNSS_LOCK = threading.Lock()
+GNSS_STATUS = {"fix_quality": 0, "fix_label": "No fix", "lat": None, "lon": None,
+               "satellites": None, "hdop": None, "altitude": None, "ts": None}
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -210,6 +215,71 @@ def save_s3_status():
             json.dump(payload, f, indent=2)
     except Exception as e:
         print(f"Error saving S3 status: {e}", flush=True)
+
+
+GGA_FIX_LABELS = {
+    0: "No fix",
+    1: "GPS",
+    2: "DGPS",
+    3: "PPS",
+    4: "RTK Fixed",
+    5: "RTK Float",
+    6: "Estimated",
+}
+
+
+def nmea_to_decimal(value, direction):
+    if not value:
+        return None
+    dot = value.index(".")
+    degrees = int(value[: dot - 2])
+    minutes = float(value[dot - 2:])
+    decimal = degrees + minutes / 60.0
+    if direction in ("S", "W"):
+        decimal = -decimal
+    return round(decimal, 8)
+
+
+def parse_gga(sentence):
+    try:
+        if "*" in sentence:
+            sentence = sentence[: sentence.index("*")]
+        parts = sentence.split(",")
+        if len(parts) < 10 or not parts[0].endswith("GGA"):
+            return None
+        fix_quality = int(parts[6]) if parts[6] else 0
+        fix_label = GGA_FIX_LABELS.get(fix_quality, f"Fix {fix_quality}")
+        if fix_quality == 0:
+            return {"fix_quality": 0, "fix_label": fix_label,
+                    "lat": None, "lon": None, "satellites": None,
+                    "hdop": None, "altitude": None}
+        return {
+            "fix_quality": fix_quality,
+            "fix_label": fix_label,
+            "lat": nmea_to_decimal(parts[2], parts[3]),
+            "lon": nmea_to_decimal(parts[4], parts[5]),
+            "satellites": int(parts[7]) if parts[7] else None,
+            "hdop": float(parts[8]) if parts[8] else None,
+            "altitude": float(parts[9]) if parts[9] else None,
+        }
+    except Exception:
+        return None
+
+
+def update_gnss_status(sentence, ts):
+    parsed = parse_gga(sentence)
+    if parsed is None:
+        return
+    with GNSS_LOCK:
+        GNSS_STATUS.update(parsed)
+        GNSS_STATUS["ts"] = ts
+    try:
+        with GNSS_LOCK:
+            payload = dict(GNSS_STATUS)
+        with open(GNSS_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        print(f"Error saving GNSS status: {e}", flush=True)
 
 
 def upload_batch_to_s3(key, batch):
@@ -585,6 +655,9 @@ def nmea_reader_loop(source):
                 line = line.strip()
                 if not line:
                     continue
+                ts = now()
+                if "GGA" in line:
+                    update_gnss_status(line, ts)
                 append_nmea_record(
                     {
                         "device_id": DEVICE_ID,
@@ -592,7 +665,7 @@ def nmea_reader_loop(source):
                         "host": host,
                         "port": port,
                         "sentence": line,
-                        "ts": now(),
+                        "ts": ts,
                     }
                 )
         except Exception as e:
