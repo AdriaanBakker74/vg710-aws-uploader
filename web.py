@@ -358,7 +358,7 @@ HTML = """
     <section class="hero">
       <div>
         <h1>VG710 Control Panel</h1>
-        <p><h2>Bakker Machine Control </h2>
+        <h2 style="margin: 4px 0 8px 0; font-size: 18px; font-weight: 400; color: rgba(255,255,255,0.85);">Bakker Machine Control</h2>
         <p>Configuratie, certificaten, CAN upload rates, AWS-status en container shell in één overzicht.</p>
         {% if device_id %}
         <p style="margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.75);">
