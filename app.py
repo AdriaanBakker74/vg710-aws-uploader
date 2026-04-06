@@ -531,9 +531,6 @@ def publish(topic, payload, qos=0):
     else:
         save_aws_status(False, f"publish rc={result.rc}: {topic}")
 
-    if topic == CAN_TOPIC:
-        append_s3_record(payload)
-
 
 def heartbeat():
     while True:
@@ -560,25 +557,29 @@ def can_reader_loop():
         if msg is None:
             continue
 
+        ts = now()
+        payload = {
+            "device_id": DEVICE_ID,
+            "channel": CAN_CHANNEL,
+            "id": msg.arbitration_id,
+            "id_hex": hex(msg.arbitration_id),
+            "extended": bool(msg.is_extended_id),
+            "remote": bool(msg.is_remote_frame),
+            "error": bool(msg.is_error_frame),
+            "dlc": msg.dlc,
+            "data": list(msg.data),
+            "data_hex": msg.data.hex().upper(),
+            "ts": ts,
+            "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id),
+        }
+
         with LOCK:
             if msg.arbitration_id not in SEEN_IDS:
                 SEEN_IDS.add(msg.arbitration_id)
                 save_seen_ids()
+            LATEST_MESSAGES[msg.arbitration_id] = payload
 
-            LATEST_MESSAGES[msg.arbitration_id] = {
-                "device_id": DEVICE_ID,
-                "channel": CAN_CHANNEL,
-                "id": msg.arbitration_id,
-                "id_hex": hex(msg.arbitration_id),
-                "extended": bool(msg.is_extended_id),
-                "remote": bool(msg.is_remote_frame),
-                "error": bool(msg.is_error_frame),
-                "dlc": msg.dlc,
-                "data": list(msg.data),
-                "data_hex": msg.data.hex().upper(),
-                "ts": now(),
-                "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id),
-            }
+        append_s3_record(payload)
 
 
 def can_publisher_loop():
@@ -648,6 +649,11 @@ def connect_ntrip_socket():
 def proxy_rtcm_to_client(client_sock):
     """Verbind met de upstream NTRIP-caster en stuur RTCM door naar de client."""
     while True:
+        if not (NTRIP_HOST and NTRIP_MOUNTPOINT):
+            print("Upstream NTRIP niet geconfigureerd; proxy wacht...", flush=True)
+            time.sleep(NTRIP_RECONNECT_SEC)
+            continue
+
         ntrip_sock = None
         try:
             print(
@@ -662,6 +668,10 @@ def proxy_rtcm_to_client(client_sock):
                 if not data:
                     raise RuntimeError("Upstream NTRIP stream gesloten")
                 client_sock.sendall(data)
+        except OSError:
+            # Client (Septentrio) verbinding verbroken
+            print("NTRIP proxy: client verbinding verbroken", flush=True)
+            return
         except Exception as e:
             print(f"Upstream NTRIP fout: {e}", flush=True)
         finally:
