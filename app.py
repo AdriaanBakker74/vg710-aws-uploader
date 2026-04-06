@@ -832,7 +832,9 @@ def handle_ntrip_client(client_sock, addr):
                         pass
                 break
 
-        if username != NTRIP_PROXY_USERNAME or password != NTRIP_PROXY_PASSWORD:
+        # Alleen afwijzen als de client wél credentials stuurt maar deze kloppen niet.
+        # Als er geen credentials zijn gestuurd (username leeg), toestaan (lokaal netwerk).
+        if username and (username != NTRIP_PROXY_USERNAME or password != NTRIP_PROXY_PASSWORD):
             client_sock.sendall(
                 b"HTTP/1.0 401 Unauthorized\r\n"
                 b"WWW-Authenticate: Basic realm=\"NTRIP\"\r\n\r\n"
