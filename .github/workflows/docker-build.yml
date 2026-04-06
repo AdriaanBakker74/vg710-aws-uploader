@@ -33,3 +33,10 @@ jobs:
             -t vg710-web-aws:${{ steps.version.outputs.VERSION }} \
             --output type=docker,dest=vg710-web-aws-${{ steps.version.outputs.VERSION }}.tar \
             .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vg710-web-aws-${{ steps.version.outputs.VERSION }}
+          path: vg710-web-aws-${{ steps.version.outputs.VERSION }}.tar
+          retention-days: 30
