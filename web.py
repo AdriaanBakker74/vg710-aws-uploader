@@ -480,7 +480,7 @@ HTML = """
           </div>
         </div>
         <div class="status-item">
-          <strong>Kwaliteit Hoogte</strong>
+          <strong>Hoogte</strong>
           <div class="muted" id="gnss-alt">
             {% if gnss.altitude is not none %}
               {{ gnss.altitude }} m
