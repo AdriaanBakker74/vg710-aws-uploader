@@ -218,13 +218,13 @@ def save_s3_status():
 
 
 GGA_FIX_LABELS = {
-    0: "No fix",
-    1: "GPS",
+    0: "Geen fix",
+    1: "Standalone",
     2: "DGPS",
     3: "PPS",
     4: "RTK Fixed",
     5: "RTK Float",
-    6: "Estimated",
+    6: "Geschat",
 }
 
 

@@ -404,8 +404,11 @@ HTML = """
         <div class="status-item">
           <strong>Fix</strong>
           {% set fq = gnss.fix_quality %}
-          <span class="pill {{ 'ok' if fq == 4 else ('warn' if fq in (1,2,3,5) else 'bad') }}"
-                style="{{ 'background:var(--warn-bg);color:var(--warn-text);' if fq in (1,2,3,5) else '' }}"
+          <span class="pill"
+                style="{% if fq == 4 %}background:var(--ok-bg);color:var(--ok-text);
+                       {%- elif fq == 5 %}background:var(--warn-bg);color:var(--warn-text);
+                       {%- elif fq in (1,2,3) %}background:#eef0f3;color:#4a5568;
+                       {%- else %}background:var(--bad-bg);color:var(--bad-text);{% endif %}"
                 id="gnss-fix">{{ gnss.fix_label }}</span>
         </div>
         <div class="status-item">
@@ -604,9 +607,15 @@ HTML = """
           const fixEl = document.getElementById('gnss-fix');
           if (fixEl) {
             fixEl.textContent = g.fix_label;
-            fixEl.className = 'pill ' + (g.fix_quality === 4 ? 'ok' : (g.fix_quality > 0 ? 'warn' : 'bad'));
-            if (g.fix_quality > 0 && g.fix_quality !== 4) fixEl.style.cssText = 'background:var(--warn-bg);color:var(--warn-text);';
-            else fixEl.style.cssText = '';
+            fixEl.className = 'pill';
+            if (g.fix_quality === 4)
+              fixEl.style.cssText = 'background:var(--ok-bg);color:var(--ok-text);';
+            else if (g.fix_quality === 5)
+              fixEl.style.cssText = 'background:var(--warn-bg);color:var(--warn-text);';
+            else if (g.fix_quality > 0)
+              fixEl.style.cssText = 'background:#eef0f3;color:#4a5568;';
+            else
+              fixEl.style.cssText = 'background:var(--bad-bg);color:var(--bad-text);';
           }
           const coordEl = document.getElementById('gnss-coords');
           if (coordEl) coordEl.innerHTML = (g.lat !== null && g.lon !== null)
