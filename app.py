@@ -1,5 +1,6 @@
 
 import base64
+import collections
 import json
 import os
 import socket
@@ -16,6 +17,7 @@ CERT = f"{BASE}/certs/device.pem.crt"
 KEY = f"{BASE}/certs/private.pem.key"
 CA = f"{BASE}/certs/AmazonRootCA1.pem"
 CAN_IDS_FILE = f"{BASE}/can_ids.json"
+CAN_LATEST_FILE = f"{BASE}/can_latest.json"
 AWS_STATUS_FILE = f"{BASE}/aws_status.json"
 S3_STATUS_FILE = f"{BASE}/s3_status.json"
 GNSS_STATUS_FILE = f"{BASE}/gnss_status.json"
@@ -171,6 +173,10 @@ NMEA_LAST_FLUSH = time.time()
 S3_STATS_LOCK = threading.Lock()
 S3_CAN_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
 S3_NMEA_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
+
+CAN_LOG_LOCK = threading.Lock()
+CAN_LOG = collections.deque(maxlen=300)
+CAN_LOG_SEQ = 0
 
 GNSS_LOCK = threading.Lock()
 GNSS_STATUS = {
@@ -579,6 +585,17 @@ def can_reader_loop():
                 save_seen_ids()
             LATEST_MESSAGES[msg.arbitration_id] = payload
 
+        with CAN_LOG_LOCK:
+            global CAN_LOG_SEQ
+            CAN_LOG_SEQ += 1
+            CAN_LOG.append({
+                "seq": CAN_LOG_SEQ,
+                "id_hex": payload["id_hex"],
+                "dlc": payload["dlc"],
+                "data_hex": payload["data_hex"],
+                "ts": ts,
+            })
+
         append_s3_record(payload)
 
 
@@ -605,27 +622,62 @@ def can_publisher_loop():
         time.sleep(0.1)
 
 
+def save_can_latest():
+    try:
+        with LOCK:
+            snapshot = list(LATEST_MESSAGES.values())
+        snapshot.sort(key=lambda m: m.get("id", 0))
+        with CAN_LOG_LOCK:
+            log_snapshot = list(CAN_LOG)
+        with open(CAN_LATEST_FILE, "w", encoding="utf-8") as f:
+            json.dump({"latest": snapshot, "log": log_snapshot}, f, separators=(",", ":"))
+    except Exception as exc:
+        print(f"Error saving can_latest.json: {exc}", flush=True)
+
+
 def s3_flush_loop():
     while True:
         flush_s3_buffer()
         flush_nmea_buffer()
+        save_can_latest()
         time.sleep(1)
 
 
-def connect_ntrip_socket():
-    if not (NTRIP_HOST and NTRIP_MOUNTPOINT):
+def get_current_ntrip_upstream():
+    """Lees actuele upstream NTRIP-configuratie uit config.json (ondersteunt runtime-updates)."""
+    try:
+        with open(f"{BASE}/config.json", encoding="utf-8") as f:
+            c = json.load(f)
+        n = c.get("ntrip", {})
+        return (
+            n.get("host", "").strip(),
+            int(n.get("port", 2101) or 2101),
+            n.get("mountpoint", "").strip(),
+            n.get("username", "").strip(),
+            n.get("password", ""),
+        )
+    except Exception:
+        return NTRIP_HOST, NTRIP_PORT, NTRIP_MOUNTPOINT, NTRIP_USERNAME, NTRIP_PASSWORD
+
+
+def connect_ntrip_socket(gga_sentence=None):
+    host, port, mountpoint, username, password = get_current_ntrip_upstream()
+    if not (host and mountpoint):
         raise RuntimeError("NTRIP host or mountpoint is not configured")
 
-    sock = socket.create_connection((NTRIP_HOST, NTRIP_PORT), timeout=15)
-    auth = base64.b64encode(f"{NTRIP_USERNAME}:{NTRIP_PASSWORD}".encode("utf-8")).decode("ascii")
+    sock = socket.create_connection((host, port), timeout=15)
+    auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     request = (
-        f"GET /{NTRIP_MOUNTPOINT} HTTP/1.0\r\n"
-        f"User-Agent: VG710-NTRIP\r\n"
+        f"GET /{mountpoint} HTTP/1.0\r\n"
+        f"User-Agent: NTRIP PythonClient/1.0\r\n"
         f"Authorization: Basic {auth}\r\n"
-        f"Ntrip-Version: Ntrip/2.0\r\n"
-        f"Connection: close\r\n\r\n"
+        f"Accept: */*\r\n"
+        f"Connection: close\r\n"
     )
-    sock.sendall(request.encode("ascii"))
+    if gga_sentence:
+        request += f"Ntrip-GGA: {gga_sentence}\r\n"
+    request += "\r\n"
+    sock.sendall(request.encode("ascii", errors="ignore"))
 
     response = b""
     while b"\r\n\r\n" not in response and len(response) < 8192:
@@ -643,43 +695,106 @@ def connect_ntrip_socket():
         sock.close()
         raise RuntimeError(f"NTRIP connect failed: {header.strip()}")
 
-    return sock, response.split(b"\r\n\r\n", 1)[1]
+    initial_payload = b""
+    if b"\r\n\r\n" in response:
+        initial_payload = response.split(b"\r\n\r\n", 1)[1]
+
+    return sock, initial_payload
 
 
-def proxy_rtcm_to_client(client_sock):
-    """Verbind met de upstream NTRIP-caster en stuur RTCM door naar de client."""
+def extract_gga_from_request(raw_request):
+    try:
+        text = raw_request.decode("latin1", errors="ignore")
+    except Exception:
+        return None
+
+    for line in text.split("\r\n"):
+        if line.startswith("$") and "GGA" in line:
+            return line.strip()
+        if line.lower().startswith("ntrip-gga:"):
+            value = line.split(":", 1)[1].strip()
+            if value.startswith("$") and "GGA" in value:
+                return value
+    return None
+
+
+
+def bridge_upstream_to_client(client_sock, upstream_sock):
     while True:
-        if not (NTRIP_HOST and NTRIP_MOUNTPOINT):
+        data = upstream_sock.recv(4096)
+        if not data:
+            raise RuntimeError("Upstream NTRIP stream gesloten")
+        client_sock.sendall(data)
+
+
+
+def bridge_client_to_upstream(client_sock, upstream_sock):
+    while True:
+        data = client_sock.recv(1024)
+        if not data:
+            raise RuntimeError("NTRIP client verbinding gesloten")
+        if b"GGA" in data:
+            upstream_sock.sendall(data)
+
+
+def proxy_rtcm_to_client(client_sock, gga_sentence=None):
+    while True:
+        host, _port, mountpoint, _user, _pass = get_current_ntrip_upstream()
+        if not (host and mountpoint):
             print("Upstream NTRIP niet geconfigureerd; proxy wacht...", flush=True)
             time.sleep(NTRIP_RECONNECT_SEC)
             continue
 
-        ntrip_sock = None
+        upstream_sock = None
+        upstream_to_client_thread = None
+        client_to_upstream_thread = None
+        stop_event = threading.Event()
+
         try:
             print(
                 f"Upstream NTRIP verbinden: {NTRIP_HOST}:{NTRIP_PORT}/{NTRIP_MOUNTPOINT}",
                 flush=True,
             )
-            ntrip_sock, initial = connect_ntrip_socket()
+            upstream_sock, initial = connect_ntrip_socket(gga_sentence=gga_sentence)
+
             if initial:
                 client_sock.sendall(initial)
-            while True:
-                data = ntrip_sock.recv(4096)
-                if not data:
-                    raise RuntimeError("Upstream NTRIP stream gesloten")
-                client_sock.sendall(data)
+
+            def upstream_worker():
+                try:
+                    bridge_upstream_to_client(client_sock, upstream_sock)
+                except Exception as e:
+                    print(f"Upstream->client gestopt: {e}", flush=True)
+                finally:
+                    stop_event.set()
+
+            def client_worker():
+                try:
+                    bridge_client_to_upstream(client_sock, upstream_sock)
+                except Exception as e:
+                    print(f"Client->upstream gestopt: {e}", flush=True)
+                finally:
+                    stop_event.set()
+
+            threading.Thread(target=upstream_worker, daemon=True).start()
+            threading.Thread(target=client_worker, daemon=True).start()
+
+            while not stop_event.is_set():
+                time.sleep(0.2)
+
+            return
         except OSError:
-            # Client (Septentrio) verbinding verbroken
             print("NTRIP proxy: client verbinding verbroken", flush=True)
             return
         except Exception as e:
             print(f"Upstream NTRIP fout: {e}", flush=True)
         finally:
-            if ntrip_sock:
+            if upstream_sock:
                 try:
-                    ntrip_sock.close()
+                    upstream_sock.close()
                 except Exception:
                     pass
+
         time.sleep(NTRIP_RECONNECT_SEC)
 
 
@@ -694,6 +809,7 @@ def handle_ntrip_client(client_sock, addr):
             raw += chunk
 
         request_str = raw.decode("latin1", errors="ignore")
+        gga_sentence = extract_gga_from_request(raw)
         lines = request_str.split("\r\n")
         parts = lines[0].split()
 
@@ -739,8 +855,11 @@ def handle_ntrip_client(client_sock, addr):
             return
 
         client_sock.sendall(b"ICY 200 OK\r\nContent-Type: gnss/data\r\n\r\n")
-        print(f"NTRIP proxy: client {addr} verbonden op mountpoint '{mountpoint}'", flush=True)
-        proxy_rtcm_to_client(client_sock)
+        print(
+            f"NTRIP proxy: client {addr} verbonden op mountpoint '{mountpoint}', gga_present={bool(gga_sentence)}",
+            flush=True,
+        )
+        proxy_rtcm_to_client(client_sock, gga_sentence=gga_sentence)
 
     except Exception as e:
         print(f"NTRIP proxy client fout ({addr}): {e}", flush=True)

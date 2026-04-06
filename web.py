@@ -402,7 +402,7 @@ HTML = """
       <p class="sub">Laatste ontvangen positie uit de NMEA GGA-stroom. Wordt bijgewerkt zodra een geldig GGA-bericht binnenkomt.</p>
       <div id="gnss-card" class="status-grid" style="grid-template-columns: repeat(4, minmax(0,1fr));">
         <div class="status-item">
-          <strong>Fix</strong>
+          <strong>Status</strong>
           {% set fq = gnss.fix_quality %}
           <span class="pill"
                 style="{% if fq == 4 %}background:var(--ok-bg);color:var(--ok-text);
@@ -422,7 +422,7 @@ HTML = """
           </div>
         </div>
         <div class="status-item">
-          <strong>Hoogte</strong>
+          <strong>Kwaliteit Hoogte</strong>
           <div class="muted" id="gnss-alt">
             {% if gnss.altitude is not none %}
               {{ gnss.altitude }} m
@@ -500,6 +500,24 @@ HTML = """
             {% endif %}
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top: 20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+          <h2 style="margin:0;">CAN berichten</h2>
+          <p class="sub" style="margin:4px 0 0 0;">Live stroom van inkomende CAN frames. Laatste 300 frames bewaard.</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button type="button" id="can-pause-btn" class="secondary" onclick="toggleCanPause()" style="white-space:nowrap;display:none;">Pauzeer</button>
+          <button type="button" id="can-clear-btn" class="secondary" onclick="clearCanLog()" style="white-space:nowrap;display:none;">Leeg</button>
+          <button type="button" id="can-toggle-btn" class="secondary" onclick="toggleCanWindow()" style="white-space:nowrap;">Toon</button>
+        </div>
+      </div>
+      <div id="can-window" style="display:none;">
+        <pre id="can-log" style="height:380px;overflow-y:auto;margin:0;font-size:12px;line-height:1.5;">Wachten op CAN data…</pre>
+        <p class="muted" id="can-row-count" style="margin-top:8px;font-size:12px;"></p>
       </div>
     </section>
 
@@ -736,6 +754,84 @@ HTML = """
     }
 
     setInterval(refreshStatus, 5000);
+
+    let canWindowVisible = false;
+    let canPollTimer = null;
+    let canLastSeq = 0;
+    let canTotalFrames = 0;
+    let canPaused = false;
+
+    function toggleCanWindow() {
+      const win = document.getElementById('can-window');
+      const btn = document.getElementById('can-toggle-btn');
+      const pauseBtn = document.getElementById('can-pause-btn');
+      const clearBtn = document.getElementById('can-clear-btn');
+      canWindowVisible = !canWindowVisible;
+      win.style.display = canWindowVisible ? 'block' : 'none';
+      btn.textContent = canWindowVisible ? 'Verberg' : 'Toon';
+      pauseBtn.style.display = canWindowVisible ? 'inline-flex' : 'none';
+      clearBtn.style.display = canWindowVisible ? 'inline-flex' : 'none';
+      if (canWindowVisible) {
+        canLastSeq = 0;
+        document.getElementById('can-log').textContent = '';
+        pollCanLog();
+        canPollTimer = setInterval(pollCanLog, 1000);
+      } else {
+        if (canPollTimer) { clearInterval(canPollTimer); canPollTimer = null; }
+      }
+    }
+
+    function toggleCanPause() {
+      canPaused = !canPaused;
+      document.getElementById('can-pause-btn').textContent = canPaused ? 'Hervat' : 'Pauzeer';
+    }
+
+    function clearCanLog() {
+      document.getElementById('can-log').textContent = '';
+      canTotalFrames = 0;
+      document.getElementById('can-row-count').textContent = '';
+    }
+
+    function fmtHex(hex) {
+      return (hex || '').match(/.{1,2}/g)?.join(' ') || '—';
+    }
+
+    async function pollCanLog() {
+      if (canPaused) return;
+      try {
+        const resp = await fetch('/can_log?since=' + canLastSeq, { cache: 'no-store' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const frames = data.frames || [];
+        if (!frames.length) return;
+
+        const logEl = document.getElementById('can-log');
+        const countEl = document.getElementById('can-row-count');
+        const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+
+        const lines = frames.map(f => {
+          const ts = f.ts ? f.ts.slice(11, 19) : '??:??:??';
+          const id = (f.id_hex || '???').padEnd(7);
+          const dlc = String(f.dlc !== undefined ? f.dlc : '?').padStart(1);
+          const data = fmtHex(f.data_hex);
+          return '[' + ts + ']  ' + id + '  DLC=' + dlc + '  ' + data;
+        });
+
+        logEl.textContent += (logEl.textContent ? '\n' : '') + lines.join('\n');
+
+        // Begrens het zichtbare log tot ~600 regels
+        const all = logEl.textContent.split('\n');
+        if (all.length > 600) logEl.textContent = all.slice(-500).join('\n');
+
+        canLastSeq = frames[frames.length - 1].seq;
+        canTotalFrames += frames.length;
+        if (countEl) countEl.textContent = canTotalFrames.toLocaleString() + ' frames ontvangen';
+
+        if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+      } catch (e) {
+        // ignore polling errors
+      }
+    }
 
     async function fetchMountpoints() {
       const btn = document.getElementById('fetch-mp-btn');
@@ -1244,6 +1340,36 @@ def shell():
 
     output = run_shell_command(command)
     return render_page(shell_command=command, shell_output=output)
+
+
+def _read_can_file():
+    path = f"{BASE_DIR}/can_latest.json"
+    if not os.path.exists(path):
+        return {}, []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data.get("latest", []), data.get("log", [])
+        if isinstance(data, list):
+            return data, []
+    except Exception:
+        pass
+    return [], []
+
+
+@app.route("/can_data")
+def can_data():
+    latest, _ = _read_can_file()
+    return latest
+
+
+@app.route("/can_log")
+def can_log():
+    since = int(request.args.get("since", 0))
+    _, log = _read_can_file()
+    frames = [f for f in log if f.get("seq", 0) > since]
+    return {"frames": frames}
 
 
 @app.route("/download_config")
