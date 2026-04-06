@@ -307,6 +307,7 @@ HTML = """
         <p style="margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.75);">
           Device ID: <strong style="color:#fff;">{{ device_id }}</strong>
           {% if asset_id %}&nbsp;&nbsp;·&nbsp;&nbsp;Asset ID: <strong style="color:#fff;">{{ asset_id }}</strong>{% endif %}
+          &nbsp;&nbsp;·&nbsp;&nbsp;Versie: <strong style="color:#fff;">{{ app_version }}</strong>
         </p>
         {% endif %}
       </div>
@@ -1168,6 +1169,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         s3_settings=s3_settings(),
         device_id=cfg.get("device_id"),
         asset_id=cfg.get("asset_id"),
+        app_version=os.environ.get("APP_VERSION", "onbekend"),
         shell_command=shell_command,
         shell_output=shell_output,
         range=range,
