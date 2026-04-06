@@ -1,5 +1,7 @@
+import base64
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import zipfile
@@ -508,6 +510,48 @@ HTML = """
       </section>
 
       <section class="card">
+        <h2>NTRIP instellingen</h2>
+        <p class="sub">Configureer de NTRIP-caster voor RTK-correcties. Klik op "Haal mountpoints op" om de beschikbare streams te laden.</p>
+        <form method="post" action="/save_ntrip" style="display:grid;gap:12px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Host</label>
+              <input type="text" name="host" value="{{ ntrip.host }}" placeholder="ntrip.example.com">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Poort</label>
+              <input type="number" name="port" value="{{ ntrip.port }}" placeholder="2101">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Gebruikersnaam</label>
+              <input type="text" name="username" value="{{ ntrip.username }}" placeholder="gebruiker">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Wachtwoord</label>
+              <input type="text" name="password" value="{{ ntrip.password }}" placeholder="wachtwoord">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">
+              Mountpoint
+              <button type="button" class="secondary" id="fetch-mp-btn" onclick="fetchMountpoints()" style="margin-left:10px;min-height:32px;font-size:12px;padding:4px 12px;">Haal mountpoints op</button>
+            </label>
+            <select name="mountpoint" id="mountpoint-select" style="width:100%;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:inherit;background:#fff;color:var(--text);">
+              <option value="{{ ntrip.mountpoint }}">{{ ntrip.mountpoint if ntrip.mountpoint else '— selecteer na ophalen —' }}</option>
+            </select>
+            <div id="mp-status" class="muted" style="margin-top:6px;font-size:12px;"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <label style="font-size:13px;font-weight:600;">NTRIP ingeschakeld</label>
+            <input type="checkbox" name="enabled" value="1" {% if ntrip.enabled %}checked{% endif %} style="width:auto;accent-color:var(--accent);">
+          </div>
+          <div>
+            <input type="submit" value="Opslaan">
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
         <h2>Container shell</h2>
         <p class="sub">Voer shell-commando's uit binnen de container voor snelle diagnose van volumes, env vars en bestanden.</p>
         <form method="post" action="/shell" class="shell-form">
@@ -579,6 +623,43 @@ HTML = """
     }
 
     setInterval(refreshStatus, 5000);
+
+    async function fetchMountpoints() {
+      const btn = document.getElementById('fetch-mp-btn');
+      const status = document.getElementById('mp-status');
+      const select = document.getElementById('mountpoint-select');
+      btn.disabled = true;
+      status.textContent = 'Ophalen…';
+
+      const host = document.querySelector('input[name="host"]').value.trim();
+      const port = document.querySelector('input[name="port"]').value.trim();
+      const username = document.querySelector('input[name="username"]').value.trim();
+      const password = document.querySelector('input[name="password"]').value.trim();
+      const current = select.value;
+
+      try {
+        const params = new URLSearchParams({ host, port, username, password });
+        const resp = await fetch('/ntrip_sourcetable?' + params.toString(), { cache: 'no-store' });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+          status.textContent = 'Fout: ' + (data.error || resp.status);
+          return;
+        }
+        select.innerHTML = '';
+        data.mountpoints.forEach(mp => {
+          const opt = document.createElement('option');
+          opt.value = mp.name;
+          opt.textContent = mp.name + (mp.format ? '  (' + mp.format + ')' : '');
+          if (mp.name === current) opt.selected = true;
+          select.appendChild(opt);
+        });
+        status.textContent = data.mountpoints.length + ' mountpoints gevonden.';
+      } catch (e) {
+        status.textContent = 'Netwerkfout: ' + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
   </script>
 </body>
 </html>
@@ -760,6 +841,60 @@ def resolve_cert_target(filename):
     return None
 
 
+def ntrip_config():
+    cfg = load_config_data()
+    n = cfg.get("ntrip", {})
+    return {
+        "enabled": bool(n.get("enabled", False)),
+        "host": n.get("host", ""),
+        "port": int(n.get("port", 2101) or 2101),
+        "mountpoint": n.get("mountpoint", ""),
+        "username": n.get("username", ""),
+        "password": n.get("password", ""),
+    }
+
+
+def fetch_ntrip_sourcetable(host, port, username, password):
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+    req = (
+        f"GET / HTTP/1.0\r\n"
+        f"User-Agent: VG710-Config\r\n"
+        f"Authorization: Basic {auth}\r\n"
+        f"Ntrip-Version: Ntrip/2.0\r\n"
+        f"Connection: close\r\n\r\n"
+    )
+    sock = socket.create_connection((host, int(port)), timeout=10)
+    try:
+        sock.sendall(req.encode("ascii"))
+        raw = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            raw += chunk
+            if len(raw) > 512 * 1024:
+                break
+    finally:
+        sock.close()
+
+    text = raw.decode("latin1", errors="ignore")
+    # strip HTTP/ICY header
+    if "\r\n\r\n" in text:
+        text = text.split("\r\n\r\n", 1)[1]
+
+    mountpoints = []
+    for line in text.splitlines():
+        if not line.startswith("STR;"):
+            continue
+        parts = line.split(";")
+        name = parts[1] if len(parts) > 1 else ""
+        fmt = parts[3] if len(parts) > 3 else ""
+        country = parts[8] if len(parts) > 8 else ""
+        if name:
+            mountpoints.append({"name": name, "format": fmt, "country": country})
+    return sorted(mountpoints, key=lambda x: x["name"])
+
+
 def shell_presets():
     return {
         "list_config": "ls -la /data/vgapp",
@@ -804,6 +939,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         aws_status_text=aws_status_text(),
         s3_status=s3_status_data(),
         gnss=gnss_status_data(),
+        ntrip=ntrip_config(),
         device_id=cfg.get("device_id"),
         asset_id=cfg.get("asset_id"),
         shell_command=shell_command,
@@ -911,6 +1047,36 @@ def save_rates():
     config["can_upload_rates"] = new_rates
     save_config_data(config)
     return redirect(url_for("index"))
+
+
+@app.route("/save_ntrip", methods=["POST"])
+def save_ntrip():
+    cfg = load_config_data()
+    cfg["ntrip"] = {
+        "enabled": request.form.get("enabled") == "1",
+        "host": request.form.get("host", "").strip(),
+        "port": int(request.form.get("port", 2101) or 2101),
+        "mountpoint": request.form.get("mountpoint", "").strip(),
+        "username": request.form.get("username", "").strip(),
+        "password": request.form.get("password", ""),
+    }
+    save_config_data(cfg)
+    return redirect(url_for("index"))
+
+
+@app.route("/ntrip_sourcetable")
+def ntrip_sourcetable():
+    host = request.args.get("host", "").strip()
+    port = request.args.get("port", "2101").strip()
+    username = request.args.get("username", "").strip()
+    password = request.args.get("password", "")
+    if not host:
+        return {"error": "Geen host opgegeven"}, 400
+    try:
+        mountpoints = fetch_ntrip_sourcetable(host, port, username, password)
+        return {"mountpoints": mountpoints}
+    except Exception as e:
+        return {"error": str(e)}, 502
 
 
 @app.route("/shell", methods=["POST"])
