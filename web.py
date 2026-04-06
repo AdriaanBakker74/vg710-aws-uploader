@@ -1444,8 +1444,10 @@ def ntrip_sourcetable():
         return {"error": str(e)}, 502
 
 
-@app.route("/shell", methods=["POST"])
+@app.route("/shell", methods=["GET", "POST"])
 def shell():
+    if request.method == "GET":
+        return render_page()
     preset = request.form.get("preset", "").strip()
     command = request.form.get("command", "").strip()
 

@@ -179,6 +179,7 @@ CAN_LOG = collections.deque(maxlen=300)
 CAN_LOG_SEQ = 0
 
 GNSS_LOCK = threading.Lock()
+LATEST_GGA = None   # meest recente ruwe GGA-zin (voor upstream NTRIP als Septentrio geen GGA meestuurt)
 GNSS_STATUS = {
     "fix_quality": 0, "fix_label": "Geen fix",
     "lat": None, "lon": None, "satellites": None,
@@ -320,9 +321,13 @@ def parse_gst(sentence):
 
 
 def update_gnss_status(sentence, ts):
+    global LATEST_GGA
     parsed = None
     if "GGA" in sentence:
         parsed = parse_gga(sentence)
+        if parsed and parsed.get("fix_quality", 0) > 0:
+            with GNSS_LOCK:
+                LATEST_GGA = sentence.strip()
     elif "GSA" in sentence:
         parsed = parse_gsa(sentence)
     elif "GST" in sentence:
@@ -751,11 +756,19 @@ def proxy_rtcm_to_client(client_sock, gga_sentence=None):
         stop_event = threading.Event()
 
         try:
+            # Gebruik GGA van Septentrio, anders de laatste bekende positie uit de NMEA-stream
+            effective_gga = gga_sentence
+            if not effective_gga:
+                with GNSS_LOCK:
+                    effective_gga = LATEST_GGA
+            if not effective_gga:
+                print("Upstream NTRIP: geen GGA beschikbaar, verbinding zonder positie", flush=True)
+
             print(
-                f"Upstream NTRIP verbinden: {NTRIP_HOST}:{NTRIP_PORT}/{NTRIP_MOUNTPOINT}",
+                f"Upstream NTRIP verbinden: {host}:{_port}/{mountpoint} gga={bool(effective_gga)}",
                 flush=True,
             )
-            upstream_sock, initial = connect_ntrip_socket(gga_sentence=gga_sentence)
+            upstream_sock, initial = connect_ntrip_socket(gga_sentence=effective_gga)
 
             if initial:
                 client_sock.sendall(initial)
@@ -776,8 +789,23 @@ def proxy_rtcm_to_client(client_sock, gga_sentence=None):
                 finally:
                     stop_event.set()
 
+            def gga_worker():
+                """Stuur elke 10 seconden een GGA naar de upstream caster (VRS vereiste)."""
+                while not stop_event.is_set():
+                    stop_event.wait(10)
+                    if stop_event.is_set():
+                        break
+                    with GNSS_LOCK:
+                        gga = LATEST_GGA
+                    if gga:
+                        try:
+                            upstream_sock.sendall((gga + "\r\n").encode("ascii", errors="ignore"))
+                        except Exception:
+                            break
+
             threading.Thread(target=upstream_worker, daemon=True).start()
             threading.Thread(target=client_worker, daemon=True).start()
+            threading.Thread(target=gga_worker, daemon=True).start()
 
             while not stop_event.is_set():
                 time.sleep(0.2)
