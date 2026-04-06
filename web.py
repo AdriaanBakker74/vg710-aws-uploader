@@ -389,6 +389,39 @@ HTML = """
       </section>
     </div>
 
+    <section class="card" style="margin-top: 20px;">
+      <h2>AWS IoT & S3 uploads</h2>
+      <p class="sub">Live verbindingsstatus en uploadstatistieken per datatype.</p>
+      <div id="aws-s3-status" class="status-grid" style="grid-template-columns: repeat(3, minmax(0,1fr));">
+        <div class="status-item">
+          <strong>AWS IoT</strong>
+          <div class="muted" id="s3-iot-status">{{ aws_status_text }}</div>
+        </div>
+        <div class="status-item">
+          <strong>S3 CAN uploads</strong>
+          <div class="muted" id="s3-can-info">
+            {% if s3_status.can.last_upload %}
+              {{ s3_status.can.total_uploads }} uploads &middot; {{ s3_status.can.total_records }} records<br>
+              <small>Laatste: {{ s3_status.can.last_upload[:19] | replace("T"," ") }}</small>
+            {% else %}
+              Nog geen uploads
+            {% endif %}
+          </div>
+        </div>
+        <div class="status-item">
+          <strong>S3 NMEA uploads</strong>
+          <div class="muted" id="s3-nmea-info">
+            {% if s3_status.nmea.last_upload %}
+              {{ s3_status.nmea.total_uploads }} uploads &middot; {{ s3_status.nmea.total_records }} records<br>
+              <small>Laatste: {{ s3_status.nmea.last_upload[:19] | replace("T"," ") }}</small>
+            {% else %}
+              Nog geen uploads
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="grid bottom">
       <section class="card">
         <h2>CAN update rates</h2>
@@ -450,13 +483,26 @@ HTML = """
     async function refreshStatus() {
       try {
         const response = await fetch('/status_json', { cache: 'no-store' });
-        if (!response.ok) {
-          return;
-        }
+        if (!response.ok) return;
         const data = await response.json();
-        const awsStatus = document.getElementById('aws-status');
-        if (awsStatus) {
-          awsStatus.innerHTML = '<strong>AWS status</strong><div class="muted">' + data.aws_status_text + '</div>';
+
+        const iotEl = document.getElementById('s3-iot-status');
+        if (iotEl) iotEl.textContent = data.aws_status_text;
+
+        const canEl = document.getElementById('s3-can-info');
+        if (canEl && data.s3_status && data.s3_status.can) {
+          const c = data.s3_status.can;
+          canEl.innerHTML = c.last_upload
+            ? c.total_uploads + ' uploads · ' + c.total_records + ' records<br><small>Laatste: ' + c.last_upload.slice(0,19).replace('T',' ') + '</small>'
+            : 'Nog geen uploads';
+        }
+
+        const nmeaEl = document.getElementById('s3-nmea-info');
+        if (nmeaEl && data.s3_status && data.s3_status.nmea) {
+          const n = data.s3_status.nmea;
+          nmeaEl.innerHTML = n.last_upload
+            ? n.total_uploads + ' uploads · ' + n.total_records + ' records<br><small>Laatste: ' + n.last_upload.slice(0,19).replace('T',' ') + '</small>'
+            : 'Nog geen uploads';
         }
       } catch (e) {
         // ignore polling errors
@@ -568,6 +614,24 @@ def build_rate_rows():
     return rows
 
 
+def s3_status_data():
+    path = f"{BASE_DIR}/s3_status.json"
+    default = {
+        "can": {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None},
+        "nmea": {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None},
+    }
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return default
+
+
 def aws_status_data():
     path = f"{BASE_DIR}/aws_status.json"
     if not os.path.exists(path):
@@ -652,6 +716,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         can_ids=current_can_ids(),
         rate_rows=build_rate_rows(),
         aws_status_text=aws_status_text(),
+        s3_status=s3_status_data(),
         shell_command=shell_command,
         shell_output=shell_output,
         range=range,
@@ -674,6 +739,7 @@ def status_json():
         "ca": exists(f"{CERT_DIR}/AmazonRootCA1.pem"),
         "can_ids": current_can_ids(),
         "rate_rows": build_rate_rows(),
+        "s3_status": s3_status_data(),
     }
 
 

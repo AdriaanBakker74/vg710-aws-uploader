@@ -17,6 +17,7 @@ KEY = f"{BASE}/certs/private.pem.key"
 CA = f"{BASE}/certs/AmazonRootCA1.pem"
 CAN_IDS_FILE = f"{BASE}/can_ids.json"
 AWS_STATUS_FILE = f"{BASE}/aws_status.json"
+S3_STATUS_FILE = f"{BASE}/s3_status.json"
 
 with open(f"{BASE}/config.json", encoding="utf-8") as f:
     cfg = json.load(f)
@@ -159,6 +160,10 @@ NMEA_LOCK = threading.Lock()
 NMEA_BUFFER = []
 NMEA_LAST_FLUSH = time.time()
 
+S3_STATS_LOCK = threading.Lock()
+S3_CAN_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
+S3_NMEA_STATS = {"total_records": 0, "total_uploads": 0, "last_key": None, "last_upload": None}
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -192,6 +197,19 @@ def save_aws_status(connected, message):
             json.dump(payload, f, indent=2)
     except Exception as e:
         print(f"Error saving AWS status: {e}", flush=True)
+
+
+def save_s3_status():
+    try:
+        with S3_STATS_LOCK:
+            payload = {
+                "can": dict(S3_CAN_STATS),
+                "nmea": dict(S3_NMEA_STATS),
+            }
+        with open(S3_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        print(f"Error saving S3 status: {e}", flush=True)
 
 
 def upload_batch_to_s3(key, batch):
@@ -249,6 +267,12 @@ def flush_s3_buffer(force=False):
 
     try:
         upload_batch_to_s3(key, batch)
+        with S3_STATS_LOCK:
+            S3_CAN_STATS["total_records"] += len(batch)
+            S3_CAN_STATS["total_uploads"] += 1
+            S3_CAN_STATS["last_key"] = key
+            S3_CAN_STATS["last_upload"] = now()
+        save_s3_status()
         save_aws_status(True, f"s3 upload ok: {key}")
     except Exception as e:
         save_aws_status(False, f"s3 upload error: {e}")
@@ -299,6 +323,12 @@ def flush_nmea_buffer(force=False):
 
     try:
         upload_batch_to_s3(key, batch)
+        with S3_STATS_LOCK:
+            S3_NMEA_STATS["total_records"] += len(batch)
+            S3_NMEA_STATS["total_uploads"] += 1
+            S3_NMEA_STATS["last_key"] = key
+            S3_NMEA_STATS["last_upload"] = now()
+        save_s3_status()
         save_aws_status(True, f"s3 upload ok: {key}")
     except Exception as e:
         save_aws_status(False, f"s3 upload error: {e}")
