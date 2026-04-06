@@ -477,6 +477,42 @@ HTML = """
       </div>
     </section>
 
+    <section class="card" style="margin-top: 20px;">
+      <h2>S3 upload instellingen</h2>
+      <p class="sub">Stel de flush-interval en batchgrootte in voor CAN- en NMEA-data. Wijzigingen worden opgeslagen in config.json en zijn actief na de volgende container-herstart.</p>
+      <form method="post" action="/save_s3_settings" style="display:grid;gap:16px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+          <div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">CAN data</div>
+            <div style="display:grid;gap:10px;">
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Flush interval (sec)</label>
+                <input type="number" min="1" name="s3_flush_interval_sec" value="{{ s3_settings.s3_flush_interval_sec }}">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Batch grootte (records)</label>
+                <input type="number" min="1" name="s3_batch_size" value="{{ s3_settings.s3_batch_size }}">
+              </div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">NMEA data</div>
+            <div style="display:grid;gap:10px;">
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Flush interval (sec)</label>
+                <input type="number" min="1" name="s3_nmea_flush_interval_sec" value="{{ s3_settings.s3_nmea_flush_interval_sec }}">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Batch grootte (records)</label>
+                <input type="number" min="1" name="s3_nmea_batch_size" value="{{ s3_settings.s3_nmea_batch_size }}">
+              </div>
+            </div>
+          </div>
+        </div>
+        <div><input type="submit" value="Opslaan"></div>
+      </form>
+    </section>
+
     <div class="grid bottom">
       <section class="card">
         <h2>CAN update rates</h2>
@@ -885,6 +921,16 @@ def resolve_cert_target(filename):
     return None
 
 
+def s3_settings():
+    cfg = load_config_data()
+    return {
+        "s3_flush_interval_sec": int(cfg.get("s3_flush_interval_sec", 30)),
+        "s3_batch_size": int(cfg.get("s3_batch_size", 100)),
+        "s3_nmea_flush_interval_sec": int(cfg.get("s3_nmea_flush_interval_sec", 30)),
+        "s3_nmea_batch_size": int(cfg.get("s3_nmea_batch_size", 100)),
+    }
+
+
 def ntrip_config():
     cfg = load_config_data()
     n = cfg.get("ntrip", {})
@@ -990,6 +1036,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         s3_status=s3_status_data(),
         gnss=gnss_status_data(),
         ntrip=ntrip_config(),
+        s3_settings=s3_settings(),
         device_id=cfg.get("device_id"),
         asset_id=cfg.get("asset_id"),
         shell_command=shell_command,
@@ -1096,6 +1143,21 @@ def save_rates():
 
     config["can_upload_rates"] = new_rates
     save_config_data(config)
+    return redirect(url_for("index"))
+
+
+@app.route("/save_s3_settings", methods=["POST"])
+def save_s3_settings():
+    cfg = load_config_data()
+    for key in ("s3_flush_interval_sec", "s3_batch_size",
+                "s3_nmea_flush_interval_sec", "s3_nmea_batch_size"):
+        try:
+            value = int(request.form.get(key, 0))
+            if value > 0:
+                cfg[key] = value
+        except ValueError:
+            pass
+    save_config_data(cfg)
     return redirect(url_for("index"))
 
 
