@@ -74,9 +74,16 @@ NTRIP_PORT = int(NTRIP_CFG.get("port", 2101) or 2101)
 NTRIP_MOUNTPOINT = NTRIP_CFG.get("mountpoint", "").strip()
 NTRIP_USERNAME = NTRIP_CFG.get("username", "").strip()
 NTRIP_PASSWORD = NTRIP_CFG.get("password", "")
-SEPTENTRIO_IP = SEPTENTRIO_CFG.get("ip", "192.168.127.250").strip() or "192.168.127.250"
-SEPTENTRIO_RTCM_PORT = int(SEPTENTRIO_CFG.get("port", 28784) or 28784)
 NTRIP_RECONNECT_SEC = int(NTRIP_CFG.get("reconnect_sec", 5) or 5)
+
+SEPTENTRIO_IP = SEPTENTRIO_CFG.get("ip", "192.168.127.250").strip() or "192.168.127.250"
+
+NTRIP_PROXY_CFG = cfg.get("ntrip_proxy", {})
+NTRIP_PROXY_HOST = NTRIP_PROXY_CFG.get("host", "0.0.0.0").strip() or "0.0.0.0"
+NTRIP_PROXY_PORT = int(NTRIP_PROXY_CFG.get("port", 7791) or 7791)
+NTRIP_PROXY_USERNAME = NTRIP_PROXY_CFG.get("username", "proxyuser")
+NTRIP_PROXY_PASSWORD = NTRIP_PROXY_CFG.get("password", "proxypass")
+NTRIP_PROXY_MOUNTPOINT = NTRIP_PROXY_CFG.get("mountpoint", "proxymountpoint")
 
 
 def build_nmea_sources():
@@ -589,49 +596,124 @@ def connect_ntrip_socket():
     return sock, response.split(b"\r\n\r\n", 1)[1]
 
 
-def relay_ntrip_loop():
-    if not NTRIP_ENABLED:
-        print("NTRIP disabled; relay loop not started", flush=True)
-        return
-
+def proxy_rtcm_to_client(client_sock):
+    """Verbind met de upstream NTRIP-caster en stuur RTCM door naar de client."""
     while True:
         ntrip_sock = None
-        sept_sock = None
         try:
             print(
-                f"Connecting NTRIP caster {NTRIP_HOST}:{NTRIP_PORT}/{NTRIP_MOUNTPOINT}",
+                f"Upstream NTRIP verbinden: {NTRIP_HOST}:{NTRIP_PORT}/{NTRIP_MOUNTPOINT}",
                 flush=True,
             )
-            ntrip_sock, initial_payload = connect_ntrip_socket()
-            sept_sock = socket.create_connection((SEPTENTRIO_IP, SEPTENTRIO_RTCM_PORT), timeout=15)
-            print(
-                f"Forwarding RTCM to Septentrio {SEPTENTRIO_IP}:{SEPTENTRIO_RTCM_PORT}",
-                flush=True,
-            )
-
-            if initial_payload:
-                sept_sock.sendall(initial_payload)
-
+            ntrip_sock, initial = connect_ntrip_socket()
+            if initial:
+                client_sock.sendall(initial)
             while True:
                 data = ntrip_sock.recv(4096)
                 if not data:
-                    raise RuntimeError("NTRIP stream closed")
-                sept_sock.sendall(data)
+                    raise RuntimeError("Upstream NTRIP stream gesloten")
+                client_sock.sendall(data)
         except Exception as e:
-            print(f"NTRIP relay error: {e}", flush=True)
+            print(f"Upstream NTRIP fout: {e}", flush=True)
         finally:
-            try:
-                if ntrip_sock:
+            if ntrip_sock:
+                try:
                     ntrip_sock.close()
-            except Exception:
-                pass
-            try:
-                if sept_sock:
-                    sept_sock.close()
-            except Exception:
-                pass
-
+                except Exception:
+                    pass
         time.sleep(NTRIP_RECONNECT_SEC)
+
+
+def handle_ntrip_client(client_sock, addr):
+    """Verwerk één inkomende NTRIP-clientverbinding."""
+    try:
+        raw = b""
+        while b"\r\n\r\n" not in raw and len(raw) < 8192:
+            chunk = client_sock.recv(1024)
+            if not chunk:
+                return
+            raw += chunk
+
+        request_str = raw.decode("latin1", errors="ignore")
+        lines = request_str.split("\r\n")
+        parts = lines[0].split()
+
+        if not parts or parts[0] != "GET":
+            client_sock.sendall(b"HTTP/1.0 400 Bad Request\r\n\r\n")
+            return
+
+        mountpoint = parts[1].lstrip("/") if len(parts) > 1 else ""
+
+        username = ""
+        password = ""
+        for line in lines[1:]:
+            if line.lower().startswith("authorization:"):
+                auth_val = line.split(":", 1)[1].strip()
+                if auth_val.startswith("Basic "):
+                    try:
+                        decoded = base64.b64decode(auth_val[6:]).decode("utf-8", errors="ignore")
+                        username, _, password = decoded.partition(":")
+                    except Exception:
+                        pass
+                break
+
+        if username != NTRIP_PROXY_USERNAME or password != NTRIP_PROXY_PASSWORD:
+            client_sock.sendall(
+                b"HTTP/1.0 401 Unauthorized\r\n"
+                b"WWW-Authenticate: Basic realm=\"NTRIP\"\r\n\r\n"
+            )
+            print(f"NTRIP proxy: ongeldig login van {addr} (user={username})", flush=True)
+            return
+
+        if not mountpoint:
+            sourcetable = (
+                f"SOURCETABLE 200 OK\r\nContent-Type: text/plain\r\n\r\n"
+                f"STR;{NTRIP_PROXY_MOUNTPOINT};VG710 RTCM Proxy;RTCM 3.2;;;1;1;NLD;;0.0;0.0;1;1;;;\r\n"
+                f"ENDSOURCETABLE\r\n"
+            )
+            client_sock.sendall(sourcetable.encode("ascii"))
+            return
+
+        if mountpoint != NTRIP_PROXY_MOUNTPOINT:
+            client_sock.sendall(b"HTTP/1.0 404 Not Found\r\n\r\n")
+            print(f"NTRIP proxy: onbekend mountpoint '{mountpoint}' van {addr}", flush=True)
+            return
+
+        client_sock.sendall(b"ICY 200 OK\r\nContent-Type: gnss/data\r\n\r\n")
+        print(f"NTRIP proxy: client {addr} verbonden op mountpoint '{mountpoint}'", flush=True)
+        proxy_rtcm_to_client(client_sock)
+
+    except Exception as e:
+        print(f"NTRIP proxy client fout ({addr}): {e}", flush=True)
+    finally:
+        try:
+            client_sock.close()
+        except Exception:
+            pass
+
+
+def ntrip_proxy_server():
+    if not NTRIP_ENABLED:
+        print("NTRIP uitgeschakeld; proxy-server niet gestart", flush=True)
+        return
+
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind((NTRIP_PROXY_HOST, NTRIP_PROXY_PORT))
+    server_sock.listen(5)
+    print(f"NTRIP proxy-server luistert op poort {NTRIP_PROXY_PORT}", flush=True)
+
+    while True:
+        try:
+            client_sock, addr = server_sock.accept()
+            threading.Thread(
+                target=handle_ntrip_client,
+                args=(client_sock, addr),
+                daemon=True,
+            ).start()
+        except Exception as e:
+            print(f"NTRIP proxy accept fout: {e}", flush=True)
+            time.sleep(1)
 
 
 def nmea_reader_loop(source):
@@ -691,7 +773,7 @@ threading.Thread(target=can_publisher_loop, daemon=True).start()
 threading.Thread(target=s3_flush_loop, daemon=True).start()
 
 if NTRIP_ENABLED:
-    threading.Thread(target=relay_ntrip_loop, daemon=True).start()
+    threading.Thread(target=ntrip_proxy_server, daemon=True).start()
 
 for source in NMEA_SOURCES:
     threading.Thread(target=nmea_reader_loop, args=(source,), daemon=True).start()

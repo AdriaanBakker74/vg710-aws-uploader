@@ -514,36 +514,71 @@ HTML = """
 
       <section class="card">
         <h2>NTRIP instellingen</h2>
-        <p class="sub">Configureer de NTRIP-caster voor RTK-correcties. Klik op "Haal mountpoints op" om de beschikbare streams te laden.</p>
-        <form method="post" action="/save_ntrip" style="display:grid;gap:12px;">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div>
-              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Host</label>
-              <input type="text" name="host" value="{{ ntrip.host }}" placeholder="ntrip.example.com">
-            </div>
-            <div>
-              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Poort</label>
-              <input type="number" name="port" value="{{ ntrip.port }}" placeholder="2101">
-            </div>
-            <div>
-              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Gebruikersnaam</label>
-              <input type="text" name="username" value="{{ ntrip.username }}" placeholder="gebruiker">
-            </div>
-            <div>
-              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Wachtwoord</label>
-              <input type="text" name="password" value="{{ ntrip.password }}" placeholder="wachtwoord">
-            </div>
-          </div>
+        <p class="sub">De app fungeert als NTRIP proxy. De Septentrio verbindt als client met de proxy; de app haalt zelf correcties op bij de upstream caster.</p>
+        <form method="post" action="/save_ntrip" style="display:grid;gap:20px;">
+
           <div>
-            <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">
-              Mountpoint
-              <button type="button" class="secondary" id="fetch-mp-btn" onclick="fetchMountpoints()" style="margin-left:10px;min-height:32px;font-size:12px;padding:4px 12px;">Haal mountpoints op</button>
-            </label>
-            <select name="mountpoint" id="mountpoint-select" style="width:100%;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:inherit;background:#fff;color:var(--text);">
-              <option value="{{ ntrip.mountpoint }}">{{ ntrip.mountpoint if ntrip.mountpoint else '— selecteer na ophalen —' }}</option>
-            </select>
-            <div id="mp-status" class="muted" style="margin-top:6px;font-size:12px;"></div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">
+              Proxy server <span class="muted" style="font-weight:400;">(Septentrio verbindt hiermee)</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Luisteradres</label>
+                <input type="text" name="proxy_host" value="{{ ntrip.proxy_host }}" placeholder="0.0.0.0">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Poort</label>
+                <input type="number" name="proxy_port" value="{{ ntrip.proxy_port }}" placeholder="7791">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Gebruikersnaam</label>
+                <input type="text" name="proxy_username" value="{{ ntrip.proxy_username }}" placeholder="proxyuser">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Wachtwoord</label>
+                <input type="text" name="proxy_password" value="{{ ntrip.proxy_password }}" placeholder="proxypass">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Mountpoint</label>
+                <input type="text" name="proxy_mountpoint" value="{{ ntrip.proxy_mountpoint }}" placeholder="proxymountpoint">
+              </div>
+            </div>
           </div>
+
+          <div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">
+              Upstream caster <span class="muted" style="font-weight:400;">(app haalt hier RTCM correcties op)</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Host</label>
+                <input type="text" name="host" value="{{ ntrip.host }}" placeholder="ntrip.example.com">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Poort</label>
+                <input type="number" name="port" value="{{ ntrip.port }}" placeholder="2101">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Gebruikersnaam</label>
+                <input type="text" name="username" value="{{ ntrip.username }}" placeholder="gebruiker">
+              </div>
+              <div>
+                <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Wachtwoord</label>
+                <input type="text" name="password" value="{{ ntrip.password }}" placeholder="wachtwoord">
+              </div>
+            </div>
+            <div style="margin-top:10px;">
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">
+                Mountpoint
+                <button type="button" class="secondary" id="fetch-mp-btn" onclick="fetchMountpoints()" style="margin-left:10px;min-height:32px;font-size:12px;padding:4px 12px;">Haal mountpoints op</button>
+              </label>
+              <select name="mountpoint" id="mountpoint-select" style="width:100%;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:inherit;background:#fff;color:var(--text);">
+                <option value="{{ ntrip.mountpoint }}">{{ ntrip.mountpoint if ntrip.mountpoint else '— selecteer na ophalen —' }}</option>
+              </select>
+              <div id="mp-status" class="muted" style="margin-top:6px;font-size:12px;"></div>
+            </div>
+          </div>
+
           <div style="display:flex;align-items:center;gap:10px;">
             <label style="font-size:13px;font-weight:600;">NTRIP ingeschakeld</label>
             <input type="checkbox" name="enabled" value="1" {% if ntrip.enabled %}checked{% endif %} style="width:auto;accent-color:var(--accent);">
@@ -853,6 +888,7 @@ def resolve_cert_target(filename):
 def ntrip_config():
     cfg = load_config_data()
     n = cfg.get("ntrip", {})
+    p = cfg.get("ntrip_proxy", {})
     return {
         "enabled": bool(n.get("enabled", False)),
         "host": n.get("host", ""),
@@ -860,6 +896,11 @@ def ntrip_config():
         "mountpoint": n.get("mountpoint", ""),
         "username": n.get("username", ""),
         "password": n.get("password", ""),
+        "proxy_host": p.get("host", "0.0.0.0"),
+        "proxy_port": int(p.get("port", 7791) or 7791),
+        "proxy_username": p.get("username", "proxyuser"),
+        "proxy_password": p.get("password", "proxypass"),
+        "proxy_mountpoint": p.get("mountpoint", "proxymountpoint"),
     }
 
 
@@ -1068,6 +1109,13 @@ def save_ntrip():
         "mountpoint": request.form.get("mountpoint", "").strip(),
         "username": request.form.get("username", "").strip(),
         "password": request.form.get("password", ""),
+    }
+    cfg["ntrip_proxy"] = {
+        "host": request.form.get("proxy_host", "0.0.0.0").strip(),
+        "port": int(request.form.get("proxy_port", 7791) or 7791),
+        "username": request.form.get("proxy_username", "proxyuser").strip(),
+        "password": request.form.get("proxy_password", "proxypass"),
+        "mountpoint": request.form.get("proxy_mountpoint", "proxymountpoint").strip(),
     }
     save_config_data(cfg)
     return redirect(url_for("index"))
