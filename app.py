@@ -156,6 +156,29 @@ for item in CAN_RATES:
     except Exception:
         pass
 
+CAN_SENSOR_GROUPS = []
+for _g in cfg.get("can_sensor_groups", []):
+    try:
+        _id_start = parse_can_id(_g["id_start"]) if _g.get("id_start") else None
+        _id_end = parse_can_id(_g["id_end"]) if _g.get("id_end") else None
+        CAN_SENSOR_GROUPS.append({
+            "name": _g.get("name", ""),
+            "id_start": _id_start,
+            "id_end": _id_end,
+            "upload_rate_sec": int(_g.get("upload_rate_sec", 10)),
+        })
+    except Exception:
+        pass
+
+
+def find_can_group(can_id):
+    for group in CAN_SENSOR_GROUPS:
+        if group["id_start"] is None or group["id_end"] is None:
+            continue
+        if group["id_start"] <= can_id <= group["id_end"]:
+            return group
+    return None
+
 SEEN_IDS = set()
 LATEST_MESSAGES = {}
 LAST_PUBLISHED = {}
@@ -572,6 +595,7 @@ def can_reader_loop():
                     continue
 
                 ts = now()
+                _group = find_can_group(msg.arbitration_id)
                 payload = {
                     "device_id": DEVICE_ID,
                     "channel": CAN_CHANNEL,
@@ -584,7 +608,9 @@ def can_reader_loop():
                     "data": list(msg.data),
                     "data_hex": msg.data.hex().upper(),
                     "ts": ts,
-                    "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id),
+                    "group_name": _group["name"] if _group else None,
+                    "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id)
+                        or (_group["upload_rate_sec"] if _group else None),
                 }
 
                 with LOCK:
@@ -623,12 +649,15 @@ def can_publisher_loop():
         now_ts = time.time()
 
         with LOCK:
-            configured_ids = list(CAN_RATE_MAP.items())
             messages_snapshot = dict(LATEST_MESSAGES)
 
-        for can_id, interval_sec in configured_ids:
-            payload = messages_snapshot.get(can_id)
-            if payload is None:
+        for can_id, payload in messages_snapshot.items():
+            interval_sec = CAN_RATE_MAP.get(can_id)
+            if interval_sec is None:
+                group = find_can_group(can_id)
+                if group:
+                    interval_sec = group["upload_rate_sec"]
+            if interval_sec is None:
                 continue
 
             last_ts = LAST_PUBLISHED.get(can_id, 0)

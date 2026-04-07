@@ -441,12 +441,12 @@ HTML = """
         <ul class="can-list">
         {% for cid in can_ids %}
           <li>
-            {% if cid.id_hex is defined %}
-              {{ cid.id_hex }}
-            {% elif cid.id is defined %}
-              {{ cid.id }}
-            {% else %}
-              {{ cid }}
+            <strong>{{ cid.id_hex if cid.id_hex is defined else cid.id }}</strong>
+            {% if cid.group_name %}
+              <span class="muted" style="font-size:11px;display:block;">{{ cid.group_name }}</span>
+            {% endif %}
+            {% if cid.rate_limit_sec is defined and cid.rate_limit_sec %}
+              <span class="muted" style="font-size:11px;display:block;">{{ cid.rate_limit_sec }}s</span>
             {% endif %}
           </li>
         {% else %}
@@ -668,6 +668,42 @@ HTML = """
           </div>
         </div>
         <div><input type="submit" value="Opslaan"></div>
+      </form>
+    </section>
+
+    <section class="card" style="margin-top: 20px;">
+      <h2>CAN sensor groepen</h2>
+      <p class="sub">Definieer sensor groepen op basis van CAN ID-bereik. Alle IDs binnen het bereik krijgen de naam en upload rate van de groep. ID-bereik kan later worden ingevuld zodra de sensoren bekend zijn.</p>
+      <form method="post" action="/save_can_groups">
+        <table>
+          <tr>
+            <th>Naam</th>
+            <th>ID van</th>
+            <th>ID t/m</th>
+            <th>Upload rate (sec)</th>
+            <th>Verwijder</th>
+          </tr>
+          {% for group in can_groups %}
+          <tr>
+            <td><input type="text" name="name_{{ loop.index0 }}" value="{{ group.name }}"></td>
+            <td><input type="text" name="id_start_{{ loop.index0 }}" value="{{ group.id_start }}" placeholder="bijv. 0x180"></td>
+            <td><input type="text" name="id_end_{{ loop.index0 }}" value="{{ group.id_end }}" placeholder="bijv. 0x183"></td>
+            <td><input type="number" min="1" name="rate_{{ loop.index0 }}" value="{{ group.upload_rate_sec }}"></td>
+            <td style="text-align:center;"><input type="checkbox" name="delete_{{ loop.index0 }}" value="1"></td>
+          </tr>
+          {% endfor %}
+          {% for idx in range(4) %}
+          <tr>
+            <td><input type="text" name="new_name_{{ idx }}" value="" placeholder="bijv. Temperatuursensor"></td>
+            <td><input type="text" name="new_id_start_{{ idx }}" value="" placeholder="0x180"></td>
+            <td><input type="text" name="new_id_end_{{ idx }}" value="" placeholder="0x183"></td>
+            <td><input type="number" min="1" name="new_rate_{{ idx }}" value="10"></td>
+            <td></td>
+          </tr>
+          {% endfor %}
+        </table>
+        <p class="muted" style="margin-top:10px;">Gebruik hex (0x180) of decimaal (384). Laat ID-velden leeg als het bereik nog niet bekend is.</p>
+        <input type="submit" value="Opslaan">
       </form>
     </section>
 
@@ -1042,6 +1078,20 @@ def load_config_data():
         return {}
 
 
+def load_can_groups():
+    groups = load_config_data().get("can_sensor_groups", [])
+    if not isinstance(groups, list):
+        return []
+    return groups
+
+
+def save_config_with_groups(groups):
+    cfg = load_config_data()
+    cfg["can_sensor_groups"] = groups
+    with open(f"{BASE_DIR}/config.json", "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
 def save_config_data(data):
     with open(f"{BASE_DIR}/config.json", "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -1067,6 +1117,18 @@ def current_can_rates():
     return rates
 
 
+def _parse_can_id_int(value):
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.lower().startswith("0x"):
+            return int(text, 16)
+        return int(text, 10)
+    except ValueError:
+        return None
+
+
 def current_can_ids():
     path = f"{BASE_DIR}/can_ids.json"
     if not os.path.exists(path):
@@ -1074,8 +1136,21 @@ def current_can_ids():
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if isinstance(data, list):
-                return data
+        if not isinstance(data, list):
+            return []
+        groups = load_can_groups()
+        for item in data:
+            can_int = item.get("id")
+            item["group_name"] = None
+            if can_int is not None:
+                for g in groups:
+                    g_start = _parse_can_id_int(g.get("id_start"))
+                    g_end = _parse_can_id_int(g.get("id_end"))
+                    if g_start is not None and g_end is not None:
+                        if g_start <= can_int <= g_end:
+                            item["group_name"] = g.get("name")
+                            break
+        return data
     except Exception:
         pass
     return []
@@ -1313,6 +1388,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         key=exists(f"{CERT_DIR}/private.pem.key"),
         ca=exists(f"{CERT_DIR}/AmazonRootCA1.pem"),
         can_ids=current_can_ids(),
+        can_groups=load_can_groups(),
         rate_rows=build_rate_rows(),
         aws_status_text=aws_status_text(),
         s3_status=s3_status_data(),
@@ -1428,6 +1504,53 @@ def save_rates():
 
     config["can_upload_rates"] = new_rates
     save_config_data(config)
+    return redirect(url_for("index"))
+
+
+@app.route("/save_can_groups", methods=["POST"])
+def save_can_groups():
+    groups = []
+    idx = 0
+    while True:
+        name = request.form.get(f"name_{idx}", "").strip()
+        if f"name_{idx}" not in request.form:
+            break
+        delete = request.form.get(f"delete_{idx}", "")
+        if not delete and name:
+            id_start = request.form.get(f"id_start_{idx}", "").strip()
+            id_end = request.form.get(f"id_end_{idx}", "").strip()
+            rate_raw = request.form.get(f"rate_{idx}", "10").strip()
+            try:
+                rate = int(rate_raw) if rate_raw else 10
+            except ValueError:
+                rate = 10
+            groups.append({
+                "name": name,
+                "id_start": id_start,
+                "id_end": id_end,
+                "upload_rate_sec": rate,
+            })
+        idx += 1
+
+    for new_idx in range(4):
+        name = request.form.get(f"new_name_{new_idx}", "").strip()
+        if not name:
+            continue
+        id_start = request.form.get(f"new_id_start_{new_idx}", "").strip()
+        id_end = request.form.get(f"new_id_end_{new_idx}", "").strip()
+        rate_raw = request.form.get(f"new_rate_{new_idx}", "10").strip()
+        try:
+            rate = int(rate_raw) if rate_raw else 10
+        except ValueError:
+            rate = 10
+        groups.append({
+            "name": name,
+            "id_start": id_start,
+            "id_end": id_end,
+            "upload_rate_sec": rate,
+        })
+
+    save_config_with_groups(groups)
     return redirect(url_for("index"))
 
 
