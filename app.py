@@ -559,49 +559,63 @@ def heartbeat():
 
 
 def can_reader_loop():
-    print(f"Opening CAN channel={CAN_CHANNEL}", flush=True)
-    bus = can.interface.Bus(channel=CAN_CHANNEL, interface="socketcan")
-    print("CAN opened", flush=True)
-
     while True:
-        msg = bus.recv()
-        if msg is None:
-            continue
+        bus = None
+        try:
+            print(f"Opening CAN channel={CAN_CHANNEL}", flush=True)
+            bus = can.interface.Bus(channel=CAN_CHANNEL, interface="socketcan")
+            print("CAN opened", flush=True)
 
-        ts = now()
-        payload = {
-            "device_id": DEVICE_ID,
-            "channel": CAN_CHANNEL,
-            "id": msg.arbitration_id,
-            "id_hex": hex(msg.arbitration_id),
-            "extended": bool(msg.is_extended_id),
-            "remote": bool(msg.is_remote_frame),
-            "error": bool(msg.is_error_frame),
-            "dlc": msg.dlc,
-            "data": list(msg.data),
-            "data_hex": msg.data.hex().upper(),
-            "ts": ts,
-            "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id),
-        }
+            while True:
+                msg = bus.recv()
+                if msg is None:
+                    continue
 
-        with LOCK:
-            if msg.arbitration_id not in SEEN_IDS:
-                SEEN_IDS.add(msg.arbitration_id)
-                save_seen_ids()
-            LATEST_MESSAGES[msg.arbitration_id] = payload
+                ts = now()
+                payload = {
+                    "device_id": DEVICE_ID,
+                    "channel": CAN_CHANNEL,
+                    "id": msg.arbitration_id,
+                    "id_hex": hex(msg.arbitration_id),
+                    "extended": bool(msg.is_extended_id),
+                    "remote": bool(msg.is_remote_frame),
+                    "error": bool(msg.is_error_frame),
+                    "dlc": msg.dlc,
+                    "data": list(msg.data),
+                    "data_hex": msg.data.hex().upper(),
+                    "ts": ts,
+                    "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id),
+                }
 
-        with CAN_LOG_LOCK:
-            global CAN_LOG_SEQ
-            CAN_LOG_SEQ += 1
-            CAN_LOG.append({
-                "seq": CAN_LOG_SEQ,
-                "id_hex": payload["id_hex"],
-                "dlc": payload["dlc"],
-                "data_hex": payload["data_hex"],
-                "ts": ts,
-            })
+                with LOCK:
+                    if msg.arbitration_id not in SEEN_IDS:
+                        SEEN_IDS.add(msg.arbitration_id)
+                        save_seen_ids()
+                    LATEST_MESSAGES[msg.arbitration_id] = payload
 
-        append_s3_record(payload)
+                with CAN_LOG_LOCK:
+                    global CAN_LOG_SEQ
+                    CAN_LOG_SEQ += 1
+                    CAN_LOG.append({
+                        "seq": CAN_LOG_SEQ,
+                        "id_hex": payload["id_hex"],
+                        "dlc": payload["dlc"],
+                        "data_hex": payload["data_hex"],
+                        "ts": ts,
+                    })
+
+                append_s3_record(payload)
+
+        except Exception as e:
+            print(f"CAN reader error on {CAN_CHANNEL}: {e}", flush=True)
+        finally:
+            if bus is not None:
+                try:
+                    bus.shutdown()
+                except Exception:
+                    pass
+
+        time.sleep(5)
 
 
 def can_publisher_loop():

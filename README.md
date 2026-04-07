@@ -1,6 +1,6 @@
 # VG710 AWS Uploader
 
-Docker container voor de **Robustel VG710** industriële router. Leest CAN-busdata en NMEA-positiedata uit, publiceert naar **AWS IoT Core** via MQTT en slaat ruwe data op in **Amazon S3**. Biedt tevens een NTRIP-proxy voor de aangesloten Septentrio GNSS-ontvanger en een webgebaseerd configuratiepaneel.
+Docker container voor de **Robuste VG710** industriële router. Leest CAN-busdata en NMEA-positiedata uit, publiceert naar **AWS IoT Core** via MQTT en slaat ruwe data op in **Amazon S3**. Biedt tevens een NTRIP-proxy voor de aangesloten Septentrio GNSS-ontvanger en een webgebaseerd configuratiepaneel.
 
 Ontwikkeld door **Bakker Machine Control**.
 
@@ -23,7 +23,7 @@ Ontwikkeld door **Bakker Machine Control**.
 
 ```
 ┌─────────────────────────────────────────────┐
-│               VG710 Docker container         │
+│               VG710 Docker container        │
 │                                             │
 │  app.py                  web.py             │
 │  ├─ CAN reader           ├─ Flask UI :8080  │
