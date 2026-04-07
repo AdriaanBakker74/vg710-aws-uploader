@@ -358,7 +358,8 @@ HTML = """
     <section class="hero">
       <div>
         <h1>VG710 Control Panel</h1>
-        <h2 style="margin: 4px 0 8px 0; font-size: 18px; font-weight: 400; color: rgba(255,255,255,0.85);">Bakker Machine Control</h2>
+        <h2 style="margin: 4px 0 8px 0; font-size: 18px; font-weight: 400; color: rgba(255,255,255,0.85);">
+        </h2>
         <p>Configuratie, certificaten, CAN upload rates, AWS-status en container shell in één overzicht.</p>
         {% if device_id %}
         <p style="margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.75);">
@@ -594,6 +595,26 @@ HTML = """
           </div>
         </div>
       </div>
+    </section>
+
+    <section class="card" style="margin-top: 20px;">
+      <h2>CAN interface beheer</h2>
+      <p class="sub">Beheer de CAN bus interface: status opvragen, interface aan/uitzetten en baudrate wijzigen.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:16px;">
+        <button type="button" class="secondary" onclick="canControl('status')">Status</button>
+        <button type="button" class="secondary" onclick="canControl('down')">CAN Down</button>
+        <button type="button" class="secondary" onclick="canControl('up')">CAN Up</button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="can-bitrate" style="height:36px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg2);color:var(--fg);font-size:13px;">
+            <option value="125000">125 kbps</option>
+            <option value="250000" selected>250 kbps</option>
+            <option value="500000">500 kbps</option>
+            <option value="1000000">1 Mbps</option>
+          </select>
+          <button type="button" onclick="canControl('set_bitrate')">Baudrate instellen</button>
+        </div>
+      </div>
+      <pre id="can-ctrl-output" style="min-height:60px;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:12px;white-space:pre-wrap;color:var(--fg);margin:0;"></pre>
     </section>
 
     <section class="card" style="margin-top: 20px;">
@@ -892,6 +913,23 @@ HTML = """
         canPollTimer = setInterval(pollCanLog, 1000);
       } else {
         if (canPollTimer) { clearInterval(canPollTimer); canPollTimer = null; }
+      }
+    }
+
+    async function canControl(action) {
+      const out = document.getElementById('can-ctrl-output');
+      out.textContent = 'Bezig…';
+      const body = new FormData();
+      body.append('action', action);
+      if (action === 'set_bitrate') {
+        body.append('bitrate', document.getElementById('can-bitrate').value);
+      }
+      try {
+        const resp = await fetch('/can_control', { method: 'POST', body });
+        const data = await resp.json();
+        out.textContent = data.output || JSON.stringify(data);
+      } catch (e) {
+        out.textContent = 'Fout: ' + e;
       }
     }
 
@@ -1490,6 +1528,34 @@ def can_log():
     _, log = _read_can_file()
     frames = [f for f in log if f.get("seq", 0) > since]
     return {"frames": frames}
+
+
+@app.route("/can_control", methods=["POST"])
+def can_control():
+    action = request.form.get("action", "")
+    channel = load_config_data().get("can_channel", "can0")
+    bitrate = request.form.get("bitrate", "250000")
+
+    allowed_bitrates = ("125000", "250000", "500000", "1000000")
+    if action == "status":
+        cmd = f"ip -details link show {channel}"
+    elif action == "down":
+        cmd = f"ip link set {channel} down"
+    elif action == "up":
+        cmd = f"ip link set {channel} up"
+    elif action == "set_bitrate":
+        if bitrate not in allowed_bitrates:
+            return {"output": f"Ongeldige baudrate: {bitrate}"}, 400
+        cmd = (
+            f"ip link set {channel} down && "
+            f"ip link set {channel} type can bitrate {bitrate} && "
+            f"ip link set {channel} up"
+        )
+    else:
+        return {"output": "Onbekende actie"}, 400
+
+    output = run_shell_command(cmd)
+    return {"output": output}
 
 
 @app.route("/download_config")
