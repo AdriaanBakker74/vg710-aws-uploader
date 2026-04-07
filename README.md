@@ -10,7 +10,8 @@ Ontwikkeld door **Bakker Machine Control**.
 
 | Onderdeel | Omschrijving |
 |---|---|
-| CAN-bus uitlezen | Leest alle frames van `can0` via SocketCAN |
+| CAN-bus uitlezen | Leest alle frames van `can0` via SocketCAN, met automatische herverbinding |
+| CAN sensor groepen | Groepeert CAN IDs op bereik (bijv. 0x180–0x183) met naam en upload rate |
 | AWS IoT MQTT | Publiceert CAN-frames en heartbeats naar AWS IoT Core (TLS) |
 | S3 upload | Batcht ruwe CAN- en NMEA-data als NDJSON naar S3 |
 | NTRIP-proxy | Septentrio verbindt als NTRIP-client; app haalt RTCM-correcties op bij externe caster |
@@ -55,6 +56,8 @@ Bereikbaar op `http://<VG710-IP>:8080`
 - **GNSS positie** — fix type, coördinaten, hoogte, satellieten, DOP, nauwkeurigheid (1σ)
 - **AWS IoT & S3 uploads** — live teller CAN- en NMEA-uploads
 - **Systeemstatus** — CPU-gebruik, geheugen, load average
+- **CAN interface beheer** — baudrate wijzigen, interface aan/uitzetten en status opvragen vanuit de browser
+- **CAN sensor groepen** — groepen op ID-bereik met naam (bijv. Temperatuursensor) en upload rate; groepnaam zichtbaar bij detected IDs
 - **CAN berichten** — live scrollend venster met alle inkomende frames
 - **NTRIP instellingen** — proxy-server config + upstream caster met mountpoint-ophaler
 - **S3 upload instellingen** — flush-interval en batchgrootte per datatype
@@ -76,6 +79,20 @@ Bereikbaar op `http://<VG710-IP>:8080`
   "mqtt_topic_prefix": "vg710",
   "heartbeat_interval_sec": 10,
   "can_channel": "can0",
+  "can_sensor_groups": [
+    {
+      "name": "Temperatuursensor",
+      "id_start": "0x180",
+      "id_end": "0x183",
+      "upload_rate_sec": 10
+    },
+    {
+      "name": "Afstandsensor",
+      "id_start": "",
+      "id_end": "",
+      "upload_rate_sec": 10
+    }
+  ],
   "s3_bucket": "mijn-bucket",
   "s3_prefix": "vg710-raw",
   "s3_region": "eu-north-1",
