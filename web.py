@@ -1191,13 +1191,12 @@ HTML = """
     }
 
     async function fetchLatestVersion() {
+      const el = document.getElementById('gh-latest-version');
       try {
-        const resp = await fetch('/gh_latest_version', { cache: 'no-store' });
+        const resp = await fetch('https://api.github.com/repos/AdriaanBakker74/vg710-aws-uploader/releases/latest');
         const data = await resp.json();
-        const el = document.getElementById('gh-latest-version');
-        if (el) el.textContent = data.tag || 'onbekend';
+        if (el) el.textContent = data.tag_name || 'onbekend';
       } catch(e) {
-        const el = document.getElementById('gh-latest-version');
         if (el) el.textContent = 'ophalen mislukt';
       }
     }
@@ -2014,20 +2013,6 @@ def download_config():
     except Exception as e:
         return f"Error creating backup: {e}", 500
 
-
-@app.route("/gh_latest_version")
-def gh_latest_version():
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            headers={"User-Agent": "vg710-web", "Accept": "application/vnd.github+json"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-        return {"tag": data.get("tag_name", "onbekend")}
-    except Exception as e:
-        return {"tag": "onbekend", "error": str(e)}, 502
 
 
 @app.route("/gh_update", methods=["POST"])
