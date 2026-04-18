@@ -921,17 +921,27 @@ HTML = """
         </div>
       </section>
     </div>
-  </div>
 
-  <section class="card" style="margin-top: 20px;">
-    <h2>Software update</h2>
-    <p class="sub">Download en laad de laatste versie van GitHub Releases direct op de VG710. Na het laden moet de container handmatig worden herstart.</p>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
-      <button type="button" id="update-btn" onclick="startUpdate()">Download &amp; laad nieuwste versie</button>
-      <span id="update-status" class="muted" style="font-size:13px;"></span>
-    </div>
-    <pre id="update-log" style="display:none;min-height:60px;font-size:12px;"></pre>
-  </section>
+    <section class="card" style="margin-top: 20px;">
+      <h2>Software update</h2>
+      <p class="sub">Download en laad de laatste versie van GitHub Releases direct op de VG710. Na het laden moet de container handmatig worden herstart.</p>
+      <div class="status-grid" style="grid-template-columns: repeat(2, minmax(0,1fr)); margin-bottom:16px;">
+        <div class="status-item">
+          <strong>Huidige versie</strong>
+          <div class="muted">{{ app_version }}</div>
+        </div>
+        <div class="status-item">
+          <strong>Nieuwste versie op GitHub</strong>
+          <div class="muted" id="gh-latest-version">Ophalen…</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+        <button type="button" id="update-btn" onclick="startUpdate()">Download &amp; laad nieuwste versie</button>
+        <span id="update-status" class="muted" style="font-size:13px;"></span>
+      </div>
+      <pre id="update-log" style="min-height:60px;font-size:12px;"></pre>
+    </section>
+  </div>
 
   <script>
     async function refreshStatus() {
@@ -1179,6 +1189,20 @@ HTML = """
         outEl.textContent = 'Fout: ' + e.message;
       }
     }
+
+    async function fetchLatestVersion() {
+      try {
+        const resp = await fetch('/gh_latest_version', { cache: 'no-store' });
+        const data = await resp.json();
+        const el = document.getElementById('gh-latest-version');
+        if (el) el.textContent = data.tag || 'onbekend';
+      } catch(e) {
+        const el = document.getElementById('gh-latest-version');
+        if (el) el.textContent = 'ophalen mislukt';
+      }
+    }
+
+    fetchLatestVersion();
 
     let _updatePollTimer = null;
 
@@ -1989,6 +2013,21 @@ def download_config():
         return send_file(zip_path, as_attachment=True, download_name="vg710_config_backup.zip")
     except Exception as e:
         return f"Error creating backup: {e}", 500
+
+
+@app.route("/gh_latest_version")
+def gh_latest_version():
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"User-Agent": "vg710-web", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        return {"tag": data.get("tag_name", "onbekend")}
+    except Exception as e:
+        return {"tag": "onbekend", "error": str(e)}, 502
 
 
 @app.route("/gh_update", methods=["POST"])
