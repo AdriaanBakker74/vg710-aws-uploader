@@ -33,16 +33,33 @@ def _run_update():
         with _update_lock:
             _update_status["log"].append(msg)
 
+    def run(cmd):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.stdout.strip():
+            log(result.stdout.strip())
+        if result.stderr.strip():
+            log(result.stderr.strip())
+        return result.returncode
+
     try:
-        log(f"Downloading {RELEASE_TAR_URL} ...")
+        log(f"Downloaden van {RELEASE_TAR_URL} ...")
         urllib.request.urlretrieve(RELEASE_TAR_URL, UPDATE_TAR_PATH)
         size_mb = round(os.path.getsize(UPDATE_TAR_PATH) / 1024 / 1024, 1)
         log(f"Download geslaagd ({size_mb} MB).")
-        log(f"Bestand opgeslagen op: {UPDATE_TAR_PATH}")
-        log("")
-        log("Voer nu via SSH op de VG710 host uit:")
-        log(f"  docker load -i {UPDATE_TAR_PATH}")
-        log("  docker restart <container_naam>")
+
+        log("Docker image laden...")
+        rc = run(["docker", "load", "-i", UPDATE_TAR_PATH])
+        if rc != 0:
+            log(f"docker load mislukt (exit {rc}).")
+            log("Controleer of /var/run/docker.sock gemount is in de container.")
+            with _update_lock:
+                _update_status.update({"running": False, "done": True, "success": False})
+            return
+
+        container_id = socket.gethostname()
+        log(f"Container herstarten ({container_id})...")
+        run(["docker", "restart", container_id])
+
         with _update_lock:
             _update_status.update({"running": False, "done": True, "success": True})
     except Exception as e:
@@ -910,7 +927,7 @@ HTML = """
 
     <section class="card" style="margin-top: 20px;">
       <h2>Software update</h2>
-      <p class="sub">Download de laatste versie van GitHub Releases naar de VG710. Na het downloaden verschijnt het SSH-commando om de image te laden en de container te herstarten.</p>
+      <p class="sub">Download de laatste versie van GitHub, laad de Docker image en herstart de container automatisch. Vereist dat <code>/var/run/docker.sock</code> gemount is.</p>
       <div class="status-grid" style="grid-template-columns: repeat(2, minmax(0,1fr)); margin-bottom:16px;">
         <div class="status-item">
           <strong>Huidige versie</strong>
@@ -922,7 +939,7 @@ HTML = """
         </div>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
-        <button type="button" id="update-btn" onclick="startUpdate()">Download nieuwste versie naar VG710</button>
+        <button type="button" id="update-btn" onclick="startUpdate()">Download &amp; installeer nieuwste versie</button>
         <span id="update-status" class="muted" style="font-size:13px;"></span>
       </div>
       <pre id="update-log" style="min-height:60px;font-size:12px;"></pre>

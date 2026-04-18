@@ -10,6 +10,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       iproute2 \
       can-utils \
+      docker.io \
       && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
