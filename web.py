@@ -618,6 +618,42 @@ HTML = """
     </section>
 
     <section class="card" style="margin-top: 20px;">
+      <h2>Völkel ASB Sensor — CAN ID configuratie</h2>
+      <p class="sub">Detecteer aangesloten ASB sensoren (CANopen) en wijzig het node ID. Sluit slechts 1 sensor aan tijdens het wijzigen.</p>
+
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+        <button type="button" onclick="volkelScan()">Detecteer sensoren</button>
+        <span id="volkel-scan-status" class="muted" style="font-size:13px;"></span>
+      </div>
+
+      <div id="volkel-result" style="display:none;">
+        <div id="volkel-device-info" style="margin-bottom:16px;"></div>
+
+        <div id="volkel-change-form" style="display:none;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">Node ID wijzigen</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;max-width:480px;">
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Huidig node ID</label>
+              <input type="number" id="volkel-current-id" min="1" max="127" readonly
+                     style="background:#f7faff;cursor:default;">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Nieuw node ID (1–127)</label>
+              <input type="number" id="volkel-new-id" min="1" max="127" placeholder="bijv. 5">
+            </div>
+            <button type="button" onclick="volkelChangeId()">Wijzig node ID</button>
+          </div>
+          <p class="muted" style="margin-top:8px;font-size:12px;">
+            De sensor wordt automatisch herstart. Nieuwe CAN IDs zijn actief na ~2 seconden.<br>
+            TPDO1: <code>0x180 + node_id</code> &nbsp;·&nbsp; Heartbeat: <code>0x700 + node_id</code>
+          </p>
+        </div>
+      </div>
+
+      <pre id="volkel-output" style="display:none;min-height:40px;margin-top:12px;font-size:12px;"></pre>
+    </section>
+
+    <section class="card" style="margin-top: 20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <div>
           <h2 style="margin:0;">CAN berichten</h2>
@@ -1018,6 +1054,73 @@ HTML = """
         if (atBottom) logEl.scrollTop = logEl.scrollHeight;
       } catch (e) {
         // ignore polling errors
+      }
+    }
+
+    async function volkelScan() {
+      const statusEl = document.getElementById('volkel-scan-status');
+      const resultEl = document.getElementById('volkel-result');
+      const infoEl = document.getElementById('volkel-device-info');
+      const formEl = document.getElementById('volkel-change-form');
+      const outEl = document.getElementById('volkel-output');
+      statusEl.textContent = 'Scannen\u2026';
+      outEl.style.display = 'none';
+      try {
+        const resp = await fetch('/volkel_scan', { cache: 'no-store' });
+        const data = await resp.json();
+        resultEl.style.display = 'block';
+        statusEl.textContent = '';
+        if (data.count === 0) {
+          infoEl.innerHTML = '<span class="pill bad">Geen V\u00f6lkel ASB sensor gevonden</span>' +
+            '<p class="muted" style="margin-top:8px;font-size:13px;">Controleer of de sensor is aangesloten en berichten verstuurt (heartbeat 0x701\u20130x77F of TPDO1 0x181\u20130x1FF).</p>';
+          formEl.style.display = 'none';
+        } else if (data.count === 1) {
+          const nodeId = data.detected_nodes[0];
+          const tpdo1 = '0x' + (0x180 + nodeId).toString(16).toUpperCase();
+          const hb = '0x' + (0x700 + nodeId).toString(16).toUpperCase();
+          infoEl.innerHTML = '<span class="pill ok" style="margin-bottom:10px;">1 sensor gevonden</span>' +
+            '<div style="display:grid;grid-template-columns:auto auto auto;gap:6px 20px;font-size:13px;margin-top:10px;">' +
+            '<span style="color:var(--muted)">Detectie</span><span style="color:var(--muted)">Node ID</span><span style="color:var(--muted)">TPDO1 / Heartbeat CAN ID</span>' +
+            '<strong>' + data.detection_method + '</strong>' +
+            '<strong>' + nodeId + '</strong>' +
+            '<strong>' + tpdo1 + ' / ' + hb + '</strong></div>';
+          document.getElementById('volkel-current-id').value = nodeId;
+          formEl.style.display = 'block';
+        } else {
+          const nodeList = data.detected_nodes.map(n =>
+            'Node\u00a0' + n + '\u00a0(0x' + (0x180 + n).toString(16).toUpperCase() + ')'
+          ).join(', ');
+          infoEl.innerHTML = '<span class="pill bad" style="margin-bottom:8px;">' + data.count + ' sensoren gevonden \u2014 sluit slechts 1 sensor aan</span>' +
+            '<p class="muted" style="font-size:13px;margin-top:8px;">Gevonden nodes: ' + nodeList + '</p>';
+          formEl.style.display = 'none';
+        }
+      } catch(e) {
+        statusEl.textContent = 'Fout: ' + e.message;
+      }
+    }
+
+    async function volkelChangeId() {
+      const currentId = document.getElementById('volkel-current-id').value;
+      const newId = document.getElementById('volkel-new-id').value;
+      const outEl = document.getElementById('volkel-output');
+      const n = parseInt(newId);
+      if (!newId || isNaN(n) || n < 1 || n > 127) {
+        alert('Voer een geldig nieuw node ID in (1\u2013127)');
+        return;
+      }
+      if (!confirm('Node ID wijzigen van ' + currentId + ' naar ' + n + '?\nDe sensor wordt herstart.')) return;
+      outEl.style.display = 'block';
+      outEl.textContent = 'Bezig\u2026';
+      const body = new FormData();
+      body.append('current_node_id', currentId);
+      body.append('new_node_id', n);
+      try {
+        const resp = await fetch('/volkel_change_id', { method: 'POST', body });
+        const data = await resp.json();
+        outEl.textContent = data.message + '\n\n' + (data.output || '');
+        if (data.success) setTimeout(volkelScan, 3000);
+      } catch(e) {
+        outEl.textContent = 'Fout: ' + e.message;
       }
     }
 
@@ -1679,6 +1782,81 @@ def can_control():
 
     output = run_shell_command(cmd)
     return {"output": output}
+
+
+@app.route("/volkel_scan")
+def volkel_scan():
+    """Detecteer Völkel ASB sensoren op basis van CANopen heartbeat/TPDO1 CAN IDs."""
+    can_ids = current_can_ids()
+
+    heartbeat_nodes = []
+    tpdo1_nodes = []
+
+    for item in can_ids:
+        can_id_int = item.get("id")
+        if can_id_int is None:
+            continue
+        if 0x701 <= can_id_int <= 0x77F:
+            heartbeat_nodes.append(can_id_int - 0x700)
+        elif 0x181 <= can_id_int <= 0x1FF:
+            tpdo1_nodes.append(can_id_int - 0x180)
+
+    if heartbeat_nodes:
+        nodes = sorted(set(heartbeat_nodes))
+        method = "heartbeat (0x700+node_id)"
+    else:
+        nodes = sorted(set(tpdo1_nodes))
+        method = "TPDO1 (0x180+node_id)"
+
+    return {
+        "detected_nodes": nodes,
+        "count": len(nodes),
+        "detection_method": method,
+        "single_device": len(nodes) == 1,
+    }
+
+
+@app.route("/volkel_change_id", methods=["POST"])
+def volkel_change_id():
+    """Wijzig het CAN node ID van een Völkel ASB sensor via CANopen SDO."""
+    current_node_raw = request.form.get("current_node_id", "").strip()
+    new_node_raw = request.form.get("new_node_id", "").strip()
+
+    try:
+        current_id = int(current_node_raw)
+        new_id = int(new_node_raw)
+    except ValueError:
+        return {"success": False, "error": "Ongeldig node ID"}, 400
+
+    if not (1 <= current_id <= 127):
+        return {"success": False, "error": "Huidig node ID moet 1–127 zijn"}, 400
+    if not (1 <= new_id <= 127):
+        return {"success": False, "error": "Nieuw node ID moet 1–127 zijn"}, 400
+
+    channel = load_config_data().get("can_channel", "can0")
+    sdo_cob = 0x600 + current_id
+
+    # SDO schrijf object 3000h:02h (node ID), 1 byte
+    write_cmd = f"cansend {channel} {sdo_cob:03X}#2F003002{new_id:02X}000000"
+    # SDO sla op in EEPROM: object 1010h:01h = "save" (0x65766173 LE)
+    save_cmd = f"cansend {channel} {sdo_cob:03X}#2310100173617665"
+    # NMT reset node zodat nieuwe node ID actief wordt
+    reset_cmd = f"cansend {channel} 000#81{current_id:02X}"
+
+    outputs = []
+    for cmd in [write_cmd, save_cmd, reset_cmd]:
+        outputs.append(run_shell_command(cmd))
+        time.sleep(0.15)
+
+    return {
+        "success": True,
+        "commands": [write_cmd, save_cmd, reset_cmd],
+        "output": "\n".join(outputs),
+        "message": (
+            f"Node ID gewijzigd van {current_id} naar {new_id}. "
+            f"Sensor wordt herstart — nieuwe CAN IDs zijn actief na ~2 seconden."
+        ),
+    }
 
 
 @app.route("/download_config")
