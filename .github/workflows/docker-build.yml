@@ -56,6 +56,16 @@ jobs:
           path: vg710-web-aws-${{ steps.version.outputs.VERSION }}.tar
           retention-days: 30
 
+      - name: Publiceer GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp vg710-web-aws-${{ steps.version.outputs.VERSION }}.tar vg710-web-aws.tar
+          gh release create ${{ steps.version.outputs.VERSION }} \
+            vg710-web-aws.tar \
+            --title "Release ${{ steps.version.outputs.VERSION }}" \
+            --notes "Automatische build via GitHub Actions"
+
       - name: Verwijder artifacts ouder dan 15
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

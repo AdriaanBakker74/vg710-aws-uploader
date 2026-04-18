@@ -18,6 +18,52 @@ CERT_DIR = os.path.join(BASE_DIR, "certs")
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(CERT_DIR, exist_ok=True)
 
+GITHUB_REPO = "AdriaanBakker74/vg710-aws-uploader"
+RELEASE_TAR_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/vg710-web-aws.tar"
+UPDATE_TAR_PATH = "/tmp/vg710-web-aws-update.tar"
+
+_update_status = {"running": False, "log": [], "done": False, "success": None}
+_update_lock = threading.Lock()
+
+
+def _run_update():
+    def log(msg):
+        with _update_lock:
+            _update_status["log"].append(msg)
+
+    try:
+        log(f"Downloading {RELEASE_TAR_URL} ...")
+        result = subprocess.run(
+            ["wget", "-q", "--show-progress", "--progress=dot:mega",
+             "-O", UPDATE_TAR_PATH, RELEASE_TAR_URL],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            log(f"Download mislukt (exit {result.returncode}):\n{result.stderr}")
+            with _update_lock:
+                _update_status.update({"running": False, "done": True, "success": False})
+            return
+        log("Download geslaagd. Docker image laden...")
+
+        result = subprocess.run(
+            ["docker", "load", "-i", UPDATE_TAR_PATH],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            log(f"docker load mislukt (exit {result.returncode}):\n{result.stderr}")
+            with _update_lock:
+                _update_status.update({"running": False, "done": True, "success": False})
+            return
+
+        log(result.stdout.strip() or "Image geladen.")
+        log("Klaar. Herstart de container om de nieuwe versie te activeren.")
+        with _update_lock:
+            _update_status.update({"running": False, "done": True, "success": True})
+    except Exception as e:
+        with _update_lock:
+            _update_status["log"].append(f"Fout: {e}")
+            _update_status.update({"running": False, "done": True, "success": False})
+
 # --- Systeem statistieken (CPU + geheugen) ---
 _sys_stats = {"cpu_percent": None, "mem_used_mb": None, "mem_total_mb": None,
               "mem_percent": None, "load_1": None, "load_5": None}
@@ -877,6 +923,16 @@ HTML = """
     </div>
   </div>
 
+  <section class="card" style="margin-top: 20px;">
+    <h2>Software update</h2>
+    <p class="sub">Download en laad de laatste versie van GitHub Releases direct op de VG710. Na het laden moet de container handmatig worden herstart.</p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+      <button type="button" id="update-btn" onclick="startUpdate()">Download &amp; laad nieuwste versie</button>
+      <span id="update-status" class="muted" style="font-size:13px;"></span>
+    </div>
+    <pre id="update-log" style="display:none;min-height:60px;font-size:12px;"></pre>
+  </section>
+
   <script>
     async function refreshStatus() {
       try {
@@ -1122,6 +1178,51 @@ HTML = """
       } catch(e) {
         outEl.textContent = 'Fout: ' + e.message;
       }
+    }
+
+    let _updatePollTimer = null;
+
+    async function startUpdate() {
+      const btn = document.getElementById('update-btn');
+      const statusEl = document.getElementById('update-status');
+      const logEl = document.getElementById('update-log');
+      btn.disabled = true;
+      statusEl.textContent = 'Bezig met starten…';
+      logEl.style.display = 'block';
+      logEl.textContent = '';
+      try {
+        const resp = await fetch('/gh_update', { method: 'POST' });
+        if (!resp.ok) {
+          const d = await resp.json();
+          statusEl.textContent = 'Fout: ' + (d.error || resp.status);
+          btn.disabled = false;
+          return;
+        }
+      } catch(e) {
+        statusEl.textContent = 'Netwerkfout: ' + e.message;
+        btn.disabled = false;
+        return;
+      }
+      _updatePollTimer = setInterval(pollUpdateStatus, 2000);
+    }
+
+    async function pollUpdateStatus() {
+      try {
+        const resp = await fetch('/gh_update_status', { cache: 'no-store' });
+        const data = await resp.json();
+        const logEl = document.getElementById('update-log');
+        const statusEl = document.getElementById('update-status');
+        const btn = document.getElementById('update-btn');
+        logEl.textContent = (data.log || []).join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+        if (data.done) {
+          clearInterval(_updatePollTimer);
+          btn.disabled = false;
+          statusEl.textContent = data.success ? 'Gereed — herstart de container.' : 'Mislukt.';
+        } else {
+          statusEl.textContent = 'Bezig…';
+        }
+      } catch(e) { /* negeer pollingfouten */ }
     }
 
     async function fetchMountpoints() {
@@ -1888,6 +1989,22 @@ def download_config():
         return send_file(zip_path, as_attachment=True, download_name="vg710_config_backup.zip")
     except Exception as e:
         return f"Error creating backup: {e}", 500
+
+
+@app.route("/gh_update", methods=["POST"])
+def gh_update():
+    with _update_lock:
+        if _update_status["running"]:
+            return {"error": "Update al bezig"}, 409
+        _update_status.update({"running": True, "log": [], "done": False, "success": None})
+    threading.Thread(target=_run_update, daemon=True).start()
+    return {"started": True}
+
+
+@app.route("/gh_update_status")
+def gh_update_status():
+    with _update_lock:
+        return dict(_update_status)
 
 
 if __name__ == "__main__":
