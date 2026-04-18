@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -54,3 +55,19 @@ jobs:
           name: vg710-web-aws-${{ steps.version.outputs.VERSION }}
           path: vg710-web-aws-${{ steps.version.outputs.VERSION }}.tar
           retention-days: 30
+
+      - name: Verwijder artifacts ouder dan 15
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/artifacts --paginate \
+            | python3 -c "
+          import json,sys
+          arts = sorted(json.load(sys.stdin)['artifacts'], key=lambda a: a['created_at'], reverse=True)
+          for a in arts[15:]:
+              print(a['id'])
+          ")
+          for ID in $ARTIFACTS; do
+            echo "Verwijder artifact $ID"
+            gh api -X DELETE repos/${{ github.repository }}/actions/artifacts/$ID
+          done
