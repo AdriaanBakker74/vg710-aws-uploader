@@ -27,36 +27,22 @@ _update_lock = threading.Lock()
 
 
 def _run_update():
+    import urllib.request
+
     def log(msg):
         with _update_lock:
             _update_status["log"].append(msg)
 
     try:
         log(f"Downloading {RELEASE_TAR_URL} ...")
-        result = subprocess.run(
-            ["wget", "-q", "--show-progress", "--progress=dot:mega",
-             "-O", UPDATE_TAR_PATH, RELEASE_TAR_URL],
-            capture_output=True, text=True, timeout=300,
-        )
-        if result.returncode != 0:
-            log(f"Download mislukt (exit {result.returncode}):\n{result.stderr}")
-            with _update_lock:
-                _update_status.update({"running": False, "done": True, "success": False})
-            return
-        log("Download geslaagd. Docker image laden...")
-
-        result = subprocess.run(
-            ["docker", "load", "-i", UPDATE_TAR_PATH],
-            capture_output=True, text=True, timeout=300,
-        )
-        if result.returncode != 0:
-            log(f"docker load mislukt (exit {result.returncode}):\n{result.stderr}")
-            with _update_lock:
-                _update_status.update({"running": False, "done": True, "success": False})
-            return
-
-        log(result.stdout.strip() or "Image geladen.")
-        log("Klaar. Herstart de container om de nieuwe versie te activeren.")
+        urllib.request.urlretrieve(RELEASE_TAR_URL, UPDATE_TAR_PATH)
+        size_mb = round(os.path.getsize(UPDATE_TAR_PATH) / 1024 / 1024, 1)
+        log(f"Download geslaagd ({size_mb} MB).")
+        log(f"Bestand opgeslagen op: {UPDATE_TAR_PATH}")
+        log("")
+        log("Voer nu via SSH op de VG710 host uit:")
+        log(f"  docker load -i {UPDATE_TAR_PATH}")
+        log("  docker restart <container_naam>")
         with _update_lock:
             _update_status.update({"running": False, "done": True, "success": True})
     except Exception as e:
@@ -924,7 +910,7 @@ HTML = """
 
     <section class="card" style="margin-top: 20px;">
       <h2>Software update</h2>
-      <p class="sub">Download en laad de laatste versie van GitHub Releases direct op de VG710. Na het laden moet de container handmatig worden herstart.</p>
+      <p class="sub">Download de laatste versie van GitHub Releases naar de VG710. Na het downloaden verschijnt het SSH-commando om de image te laden en de container te herstarten.</p>
       <div class="status-grid" style="grid-template-columns: repeat(2, minmax(0,1fr)); margin-bottom:16px;">
         <div class="status-item">
           <strong>Huidige versie</strong>
@@ -936,7 +922,7 @@ HTML = """
         </div>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
-        <button type="button" id="update-btn" onclick="startUpdate()">Download &amp; laad nieuwste versie</button>
+        <button type="button" id="update-btn" onclick="startUpdate()">Download nieuwste versie naar VG710</button>
         <span id="update-status" class="muted" style="font-size:13px;"></span>
       </div>
       <pre id="update-log" style="min-height:60px;font-size:12px;"></pre>
