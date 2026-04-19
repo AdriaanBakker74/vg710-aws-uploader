@@ -1,0 +1,14 @@
+services:
+  vg710:
+    image: vg710-web-aws:latest
+    container_name: vg710
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      - /data/vgapp:/data/vgapp
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
