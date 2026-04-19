@@ -1086,7 +1086,7 @@ HTML = """
     }
 
     function fmtHex(hex) {
-      return (hex || '').match(/.{1,2}/g)?.join(' ') || '—';
+      var m = (hex || '').match(/.{1,2}/g); return m ? m.join(' ') : '\u2014';
     }
 
     async function pollCanLog() {
