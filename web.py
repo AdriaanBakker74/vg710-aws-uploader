@@ -1195,17 +1195,12 @@ HTML = """
 
     async function fetchLatestVersion() {
       const el = document.getElementById('gh-latest-version');
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
       try {
-        const resp = await fetch('https://api.github.com/repos/AdriaanBakker74/vg710-aws-uploader/releases/latest', { signal: controller.signal });
-        clearTimeout(timeout);
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const resp = await fetch('/gh_latest_version', { cache: 'no-store' });
         const data = await resp.json();
-        if (el) el.textContent = data.tag_name || 'onbekend';
+        if (el) el.textContent = data.tag_name || data.error || 'onbekend';
       } catch(e) {
-        clearTimeout(timeout);
-        if (el) el.textContent = e.name === 'AbortError' ? 'timeout' : 'ophalen mislukt';
+        if (el) el.textContent = 'ophalen mislukt';
       }
     }
 
@@ -1217,6 +1212,7 @@ HTML = """
       const btn = document.getElementById('update-btn');
       const statusEl = document.getElementById('update-status');
       const logEl = document.getElementById('update-log');
+      if (!btn || !statusEl || !logEl) { alert('UI-elementen niet gevonden'); return; }
       btn.disabled = true;
       statusEl.textContent = 'Bezig met starten…';
       logEl.style.display = 'block';
@@ -1224,7 +1220,7 @@ HTML = """
       try {
         const resp = await fetch('/gh_update', { method: 'POST' });
         if (!resp.ok) {
-          const d = await resp.json();
+          const d = await resp.json().catch(() => ({}));
           statusEl.textContent = 'Fout: ' + (d.error || resp.status);
           btn.disabled = false;
           return;
@@ -2021,6 +2017,19 @@ def download_config():
     except Exception as e:
         return f"Error creating backup: {e}", 500
 
+
+
+@app.route("/gh_latest_version")
+def gh_latest_version():
+    import urllib.request
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url, headers={"User-Agent": "vg710-updater"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        return {"tag_name": data.get("tag_name", "onbekend")}
+    except Exception as e:
+        return {"error": str(e)}, 502
 
 
 @app.route("/gh_update", methods=["POST"])
