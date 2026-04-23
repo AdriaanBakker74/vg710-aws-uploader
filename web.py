@@ -1040,7 +1040,7 @@ HTML = """
           if (satEl) satEl.textContent = g.satellites !== null ? g.satellites : '—';
           const dopEl = document.getElementById('gnss-dop');
           if (dopEl) dopEl.innerHTML = g.hdop !== null
-            ? 'H: ' + g.hdop + ' &nbsp;·&nbsp; V: ' + (g.vdop ?? '—') + ' &nbsp;·&nbsp; P: ' + (g.pdop ?? '—') : '—';
+            ? 'H: ' + g.hdop + ' &nbsp;·&nbsp; V: ' + (g.vdop != null ? g.vdop : '—') + ' &nbsp;·&nbsp; P: ' + (g.pdop != null ? g.pdop : '—') : '—';
           const accEl = document.getElementById('gnss-acc');
           if (accEl) accEl.innerHTML = g.acc_lat !== null
             ? 'N: ' + g.acc_lat.toFixed(3) + ' m<br>E: ' + g.acc_lon.toFixed(3) + ' m<br>H: ' + (g.acc_alt !== null ? g.acc_alt.toFixed(3) + ' m' : '—') : '—';
