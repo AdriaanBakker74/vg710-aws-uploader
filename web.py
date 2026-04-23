@@ -1195,12 +1195,17 @@ HTML = """
 
     async function fetchLatestVersion() {
       const el = document.getElementById('gh-latest-version');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
       try {
-        const resp = await fetch('https://api.github.com/repos/AdriaanBakker74/vg710-aws-uploader/releases/latest');
+        const resp = await fetch('https://api.github.com/repos/AdriaanBakker74/vg710-aws-uploader/releases/latest', { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
         if (el) el.textContent = data.tag_name || 'onbekend';
       } catch(e) {
-        if (el) el.textContent = 'ophalen mislukt';
+        clearTimeout(timeout);
+        if (el) el.textContent = e.name === 'AbortError' ? 'timeout' : 'ophalen mislukt';
       }
     }
 
