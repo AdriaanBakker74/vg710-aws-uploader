@@ -1,4 +1,5 @@
 import base64
+import functools
 import json
 import os
 import socket
@@ -8,7 +9,7 @@ import threading
 import time
 import zipfile
 
-from flask import Flask, redirect, render_template_string, request, send_file, url_for
+from flask import Flask, redirect, render_template_string, request, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -17,6 +18,109 @@ BASE_DIR = "/data/vgapp"
 CERT_DIR = os.path.join(BASE_DIR, "certs")
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(CERT_DIR, exist_ok=True)
+
+# --- Secret key (persistent across restarts) ---
+_secret_key_path = os.path.join(BASE_DIR, "web_secret_key")
+if os.path.exists(_secret_key_path):
+    with open(_secret_key_path, "rb") as _f:
+        app.secret_key = _f.read()
+else:
+    app.secret_key = os.urandom(32)
+    with open(_secret_key_path, "wb") as _f:
+        _f.write(app.secret_key)
+
+
+def _get_credentials():
+    try:
+        with open(os.path.join(BASE_DIR, "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("web_username", "admin"), cfg.get("web_password", "admin")
+    except Exception:
+        return "admin", "admin"
+
+
+def login_required(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated
+
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inloggen — VG710</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: #f0f2f5; display: flex; align-items: center;
+           justify-content: center; min-height: 100vh; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 16px rgba(0,0,0,.1);
+            padding: 40px 36px; width: 100%; max-width: 360px; }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .sub { font-size: 13px; color: #6b7280; margin-bottom: 28px; }
+    label { display: block; font-size: 13px; font-weight: 600;
+            color: #374151; margin-bottom: 6px; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db;
+            border-radius: 8px; font-size: 14px; outline: none; }
+    input:focus { border-color: #3b5bdb; box-shadow: 0 0 0 3px rgba(59,91,219,.15); }
+    .field { margin-bottom: 18px; }
+    button { width: 100%; padding: 11px; background: #3b5bdb; color: #fff;
+             border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
+             cursor: pointer; margin-top: 4px; }
+    button:hover { background: #2f4ac5; }
+    .error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
+             border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 18px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>VG710 Beheer</h1>
+    <p class="sub">Log in om door te gaan</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post">
+      <div class="field">
+        <label for="username">Gebruikersnaam</label>
+        <input id="username" name="username" type="text" autocomplete="username" autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Wachtwoord</label>
+        <input id="password" name="password" type="password" autocomplete="current-password">
+      </div>
+      <button type="submit">Inloggen</button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+
+@app.before_request
+def require_login():
+    if request.endpoint not in ("login", "logout", "static") and not session.get("logged_in"):
+        return redirect(url_for("login", next=request.path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        username, password = _get_credentials()
+        if (request.form.get("username") == username and
+                request.form.get("password") == password):
+            session["logged_in"] = True
+            return redirect(request.args.get("next") or url_for("index"))
+        error = "Ongeldige gebruikersnaam of wachtwoord"
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 GITHUB_REPO = "AdriaanBakker74/vg710-aws-uploader"
 RELEASE_TAR_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/vg710-web-aws.tar"
@@ -443,6 +547,7 @@ HTML = """
       </div>
       <div class="hero-actions">
         <a class="button secondary" href="/download_config">Download Config + S3 + Certs</a>
+        <a class="button secondary" href="/logout" style="margin-left:8px;">Uitloggen</a>
       </div>
     </section>
 
