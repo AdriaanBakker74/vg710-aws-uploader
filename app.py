@@ -6,6 +6,7 @@ import os
 import socket
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 
 import boto3
@@ -65,6 +66,9 @@ S3_FLUSH_INTERVAL_SEC = int(cfg.get("s3_flush_interval_sec", 30))
 S3_BATCH_SIZE = int(cfg.get("s3_batch_size", 100))
 S3_NMEA_BATCH_SIZE = int(cfg.get("s3_nmea_batch_size", 100))
 S3_NMEA_FLUSH_INTERVAL_SEC = int(cfg.get("s3_nmea_flush_interval_sec", 30))
+S3_QUEUE_DIR = f"{BASE}/s3_queue"
+S3_UPLOAD_INTERVAL_SEC = int(cfg.get("s3_upload_interval_sec", 5))
+S3_QUEUE_MAX_BYTES = int(cfg.get("s3_queue_max_mb", 500)) * 1024 * 1024
 
 CAN_RATES = cfg.get("can_upload_rates", [])
 NTRIP_CFG = cfg.get("ntrip", {})
@@ -372,10 +376,37 @@ def update_gnss_status(sentence, ts):
         print(f"Error saving GNSS status: {e}", flush=True)
 
 
+def ensure_queue_dirs():
+    os.makedirs(os.path.join(S3_QUEUE_DIR, "can"), exist_ok=True)
+    os.makedirs(os.path.join(S3_QUEUE_DIR, "nmea"), exist_ok=True)
+
+
+def write_batch_to_queue(batch, data_type):
+    """Schrijf een batch atomisch naar de schijfwachtrij. Geeft True bij succes."""
+    if not batch:
+        return True
+    ts = batch[0].get("ts", now()).replace(":", "-")
+    uid = uuid.uuid4().hex[:8]
+    path = os.path.join(S3_QUEUE_DIR, data_type, f"{ts}_{uid}.ndjson")
+    tmp_path = path + ".tmp"
+    try:
+        body = "\n".join(json.dumps(item, separators=(",", ":")) for item in batch) + "\n"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.replace(tmp_path, path)
+        return True
+    except Exception as e:
+        print(f"Queue schrijffout ({data_type}): {e}", flush=True)
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
+
+
 def upload_batch_to_s3(key, batch):
     if not S3_CLIENT or not S3_BUCKET or not batch:
         return
-
     body = "\n".join(json.dumps(item, separators=(",", ":")) for item in batch) + "\n"
     S3_CLIENT.put_object(
         Bucket=S3_BUCKET,
@@ -383,6 +414,96 @@ def upload_batch_to_s3(key, batch):
         Body=body.encode("utf-8"),
         ContentType="application/x-ndjson",
     )
+
+
+def enforce_queue_limit():
+    """Verwijder de oudste wachtrijbestanden totdat het totaal onder S3_QUEUE_MAX_BYTES valt."""
+    entries = []
+    for data_type in ("can", "nmea"):
+        queue_dir = os.path.join(S3_QUEUE_DIR, data_type)
+        try:
+            for filename in os.listdir(queue_dir):
+                if not filename.endswith(".ndjson") or filename.endswith(".tmp"):
+                    continue
+                path = os.path.join(queue_dir, filename)
+                try:
+                    size = os.path.getsize(path)
+                    entries.append((filename, path, size))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    total = sum(e[2] for e in entries)
+    if total <= S3_QUEUE_MAX_BYTES:
+        return
+
+    # Oudste bestanden eerst verwijderen (bestandsnaam begint met timestamp)
+    entries.sort(key=lambda e: e[0])
+    for filename, path, size in entries:
+        if total <= S3_QUEUE_MAX_BYTES:
+            break
+        try:
+            os.remove(path)
+            total -= size
+            print(f"Queue limiet: oudste bestand verwijderd: {path}", flush=True)
+        except Exception as e:
+            print(f"Queue limiet: fout bij verwijderen {path}: {e}", flush=True)
+
+
+def s3_upload_worker():
+    """Upload bestanden uit de schijfwachtrij naar S3; verwijder pas na succes."""
+    if not S3_CLIENT or not S3_BUCKET:
+        return
+    while True:
+        enforce_queue_limit()
+        for data_type in ("can", "nmea"):
+            queue_dir = os.path.join(S3_QUEUE_DIR, data_type)
+            try:
+                filenames = sorted(
+                    f for f in os.listdir(queue_dir)
+                    if f.endswith(".ndjson") and not f.endswith(".tmp")
+                )
+            except Exception:
+                continue
+
+            for filename in filenames:
+                path = os.path.join(queue_dir, filename)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    batch = [
+                        json.loads(line)
+                        for line in content.strip().splitlines()
+                        if line
+                    ]
+                    if not batch:
+                        os.remove(path)
+                        continue
+
+                    first_ts = batch[0].get("ts", now())
+                    ts_part = first_ts.replace(":", "-")
+                    date_part = first_ts[:10]
+                    hour_part = first_ts[11:13] if len(first_ts) >= 13 else "00"
+                    key = f"{S3_PREFIX}/{DEVICE_ID}/{data_type}/{date_part}/{hour_part}/{ts_part}.ndjson"
+
+                    upload_batch_to_s3(key, batch)
+                    os.remove(path)
+
+                    stats = S3_CAN_STATS if data_type == "can" else S3_NMEA_STATS
+                    with S3_STATS_LOCK:
+                        stats["total_records"] += len(batch)
+                        stats["total_uploads"] += 1
+                        stats["last_key"] = key
+                        stats["last_upload"] = now()
+                    save_s3_status()
+                    save_aws_status(True, f"s3 upload ok: {key}")
+
+                except Exception as e:
+                    save_aws_status(False, f"s3 upload error: {e}")
+                    print(f"S3 upload fout voor {filename}: {e}", flush=True)
+
+        time.sleep(S3_UPLOAD_INTERVAL_SEC)
 
 
 def append_s3_record(payload):
@@ -419,24 +540,7 @@ def flush_s3_buffer(force=False):
         S3_BUFFER.clear()
         S3_LAST_FLUSH = time.time()
 
-    first_ts = batch[0].get("ts", now())
-    ts_part = first_ts.replace(":", "-")
-    date_part = first_ts[:10]
-    hour_part = first_ts[11:13] if len(first_ts) >= 13 else "00"
-    key = f"{S3_PREFIX}/{DEVICE_ID}/can/{date_part}/{hour_part}/{ts_part}.ndjson"
-
-    try:
-        upload_batch_to_s3(key, batch)
-        with S3_STATS_LOCK:
-            S3_CAN_STATS["total_records"] += len(batch)
-            S3_CAN_STATS["total_uploads"] += 1
-            S3_CAN_STATS["last_key"] = key
-            S3_CAN_STATS["last_upload"] = now()
-        save_s3_status()
-        save_aws_status(True, f"s3 upload ok: {key}")
-    except Exception as e:
-        save_aws_status(False, f"s3 upload error: {e}")
-        print(f"S3 upload error: {e}", flush=True)
+    if not write_batch_to_queue(batch, "can"):
         with LOCK:
             S3_BUFFER[:0] = batch
 
@@ -475,24 +579,7 @@ def flush_nmea_buffer(force=False):
         NMEA_BUFFER.clear()
         NMEA_LAST_FLUSH = time.time()
 
-    first_ts = batch[0].get("ts", now())
-    ts_part = first_ts.replace(":", "-")
-    date_part = first_ts[:10]
-    hour_part = first_ts[11:13] if len(first_ts) >= 13 else "00"
-    key = f"{S3_PREFIX}/{DEVICE_ID}/nmea/{date_part}/{hour_part}/{ts_part}.ndjson"
-
-    try:
-        upload_batch_to_s3(key, batch)
-        with S3_STATS_LOCK:
-            S3_NMEA_STATS["total_records"] += len(batch)
-            S3_NMEA_STATS["total_uploads"] += 1
-            S3_NMEA_STATS["last_key"] = key
-            S3_NMEA_STATS["last_upload"] = now()
-        save_s3_status()
-        save_aws_status(True, f"s3 upload ok: {key}")
-    except Exception as e:
-        save_aws_status(False, f"s3 upload error: {e}")
-        print(f"S3 upload error: {e}", flush=True)
+    if not write_batch_to_queue(batch, "nmea"):
         with NMEA_LOCK:
             NMEA_BUFFER[:0] = batch
 
@@ -1018,10 +1105,13 @@ def nmea_reader_loop(source):
         time.sleep(5)
 
 
+ensure_queue_dirs()
+
 threading.Thread(target=heartbeat, daemon=True).start()
 threading.Thread(target=can_reader_loop, daemon=True).start()
 threading.Thread(target=can_publisher_loop, daemon=True).start()
 threading.Thread(target=s3_flush_loop, daemon=True).start()
+threading.Thread(target=s3_upload_worker, daemon=True).start()
 
 if NTRIP_ENABLED:
     threading.Thread(target=ntrip_proxy_server, daemon=True).start()
