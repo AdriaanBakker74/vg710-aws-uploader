@@ -25,6 +25,29 @@ UPDATE_TAR_PATH = "/tmp/vg710-web-aws-update.tar"
 _update_status = {"running": False, "log": [], "done": False, "success": None}
 _update_lock = threading.Lock()
 
+_gh_version_cache = {"tag_name": None}
+_gh_version_lock = threading.Lock()
+
+
+def _gh_version_fetch_loop():
+    import urllib.request
+    while True:
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "vg710-updater"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+            tag = data.get("tag_name") or "onbekend"
+        except Exception:
+            tag = None
+        with _gh_version_lock:
+            if tag:
+                _gh_version_cache["tag_name"] = tag
+        time.sleep(300)
+
+
+threading.Thread(target=_gh_version_fetch_loop, daemon=True).start()
+
 
 def _run_update():
     import urllib.request
@@ -2021,15 +2044,9 @@ def download_config():
 
 @app.route("/gh_latest_version")
 def gh_latest_version():
-    import urllib.request
-    try:
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        req = urllib.request.Request(url, headers={"User-Agent": "vg710-updater"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-        return {"tag_name": data.get("tag_name", "onbekend")}
-    except Exception as e:
-        return {"error": str(e)}, 502
+    with _gh_version_lock:
+        tag = _gh_version_cache.get("tag_name")
+    return {"tag_name": tag or "ophalen…"}
 
 
 @app.route("/gh_update", methods=["POST"])
@@ -2049,4 +2066,4 @@ def gh_update_status():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=8080, threaded=True)
