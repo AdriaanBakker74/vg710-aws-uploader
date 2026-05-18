@@ -1431,7 +1431,7 @@ HTML = """
         alert('Voer een geldig nieuw node ID in (1\u2013127)');
         return;
       }
-      if (!confirm('Node ID wijzigen van ' + currentId + ' naar ' + n + '?\nDe sensor wordt herstart.')) return;
+      if (!confirm('Node ID wijzigen van ' + currentId + ' naar ' + n + '?\\nDe sensor wordt herstart.')) return;
       outEl.style.display = 'block';
       outEl.textContent = 'Bezig\u2026';
       const body = new FormData();
@@ -1440,7 +1440,7 @@ HTML = """
       try {
         const resp = await fetch('/volkel_change_id', { method: 'POST', body });
         const data = await resp.json();
-        outEl.textContent = data.message + '\n\n' + (data.output || '');
+        outEl.textContent = data.message + '\\n\\n' + (data.output || '');
         if (data.success) setTimeout(volkelScan, 3000);
       } catch(e) {
         outEl.textContent = 'Fout: ' + e.message;
