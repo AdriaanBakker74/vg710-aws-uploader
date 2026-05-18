@@ -22,6 +22,26 @@ CAN_LATEST_FILE = f"{BASE}/can_latest.json"
 AWS_STATUS_FILE = f"{BASE}/aws_status.json"
 S3_STATUS_FILE = f"{BASE}/s3_status.json"
 GNSS_STATUS_FILE = f"{BASE}/gnss_status.json"
+AWS_CREDENTIALS_FILE = f"{BASE}/aws_credentials.json"
+
+# Override AWS creds uit /data/vgapp/aws_credentials.json wanneer aanwezig.
+# Dit gebeurt vóór elke boto3.client(...) aanroep zodat de UI-edits direct werken
+# na een container-herstart, zonder dat docker-compose .env nodig is.
+if os.path.exists(AWS_CREDENTIALS_FILE):
+    try:
+        with open(AWS_CREDENTIALS_FILE, encoding="utf-8") as f:
+            _aws_creds = json.load(f)
+        if isinstance(_aws_creds, dict):
+            for env_key, json_key in (
+                ("AWS_ACCESS_KEY_ID", "access_key_id"),
+                ("AWS_SECRET_ACCESS_KEY", "secret_access_key"),
+                ("AWS_DEFAULT_REGION", "region"),
+            ):
+                value = _aws_creds.get(json_key)
+                if value:
+                    os.environ[env_key] = str(value)
+    except Exception as e:
+        print(f"Error loading aws_credentials.json: {e}", flush=True)
 
 with open(f"{BASE}/config.json", encoding="utf-8") as f:
     cfg = json.load(f)

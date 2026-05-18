@@ -737,6 +737,54 @@ HTML = """
           </div>
         </div>
       </div>
+
+      <div style="margin-top:20px;border-top:1px solid var(--line);padding-top:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+          <div>
+            <strong style="font-size:14px;">AWS credentials</strong>
+            <div class="muted" style="font-size:12px;margin-top:2px;">
+              Actief: <code id="aws-cred-key">{{ aws_creds.access_key_masked or "—" }}</code>
+              &nbsp;·&nbsp; regio: <code id="aws-cred-region">{{ aws_creds.region or "—" }}</code>
+              &nbsp;·&nbsp; bron: <span id="aws-cred-source">{{ aws_creds.source }}</span>
+              {% if aws_creds.file_updated_at %}
+                &nbsp;·&nbsp; bijgewerkt: <span id="aws-cred-updated">{{ aws_creds.file_updated_at }}</span>
+              {% endif %}
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button type="button" class="secondary" onclick="testAwsCreds()">Test huidige</button>
+            <button type="button" class="secondary" onclick="toggleAwsCredForm()" id="aws-cred-toggle">Wijzig…</button>
+          </div>
+        </div>
+
+        <div id="aws-cred-form" style="display:none;margin-top:8px;">
+          <p class="sub" style="margin-bottom:12px;">
+            Nieuwe IAM access key voor <code>vg710-uploader</code>. Wordt getest vóór opslaan en bewaard in <code>/data/vgapp/aws_credentials.json</code>.
+            De S3-uploader pikt de nieuwe key pas op na een container-herstart.
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:720px;">
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Access Key ID</label>
+              <input type="text" id="aws-input-key" placeholder="AKIA…" autocomplete="off" spellcheck="false">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Regio</label>
+              <input type="text" id="aws-input-region" value="{{ aws_creds.region or 'eu-north-1' }}" autocomplete="off" spellcheck="false">
+            </div>
+            <div style="grid-column:1 / -1;">
+              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Secret Access Key</label>
+              <input type="password" id="aws-input-secret" placeholder="••••••••" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+            <button type="button" class="secondary" onclick="testAwsCreds(true)">Test deze velden</button>
+            <button type="button" onclick="saveAwsCreds()">Opslaan (test + schrijf)</button>
+            <button type="button" class="secondary" onclick="restartContainer()" style="margin-left:auto;">Herstart container</button>
+          </div>
+        </div>
+
+        <pre id="aws-cred-output" style="display:none;margin-top:12px;background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;white-space:pre-wrap;color:var(--fg);"></pre>
+      </div>
     </section>
 
     <section class="card" style="margin-top: 20px;">
@@ -1202,6 +1250,78 @@ HTML = """
       }
     }
 
+    function _awsCredOut(msg, ok) {
+      const out = document.getElementById('aws-cred-output');
+      out.style.display = 'block';
+      out.style.borderColor = ok === true ? 'var(--ok-text)' : ok === false ? 'var(--bad-text)' : 'var(--line)';
+      out.textContent = msg;
+    }
+
+    function toggleAwsCredForm() {
+      const form = document.getElementById('aws-cred-form');
+      const btn = document.getElementById('aws-cred-toggle');
+      const shown = form.style.display !== 'none';
+      form.style.display = shown ? 'none' : 'block';
+      btn.textContent = shown ? 'Wijzig…' : 'Annuleer';
+    }
+
+    async function testAwsCreds(useFormValues) {
+      const body = new FormData();
+      if (useFormValues) {
+        body.append('access_key_id', document.getElementById('aws-input-key').value.trim());
+        body.append('secret_access_key', document.getElementById('aws-input-secret').value);
+        body.append('region', document.getElementById('aws-input-region').value.trim());
+      }
+      _awsCredOut('Testen…', null);
+      try {
+        const resp = await fetch('/test_aws_credentials', { method: 'POST', body });
+        const data = await resp.json();
+        _awsCredOut((data.ok ? 'OK — ' : 'FOUT — ') + (data.message || ''), data.ok);
+      } catch (e) {
+        _awsCredOut('Fout: ' + e, false);
+      }
+    }
+
+    async function saveAwsCreds() {
+      const key = document.getElementById('aws-input-key').value.trim();
+      const secret = document.getElementById('aws-input-secret').value;
+      const region = document.getElementById('aws-input-region').value.trim();
+      if (!key || !secret) {
+        _awsCredOut('Vul access key én secret key in.', false);
+        return;
+      }
+      const body = new FormData();
+      body.append('access_key_id', key);
+      body.append('secret_access_key', secret);
+      body.append('region', region);
+      _awsCredOut('Testen en opslaan…', null);
+      try {
+        const resp = await fetch('/save_aws_credentials', { method: 'POST', body });
+        const data = await resp.json();
+        _awsCredOut((data.ok ? 'OK — ' : 'FOUT — ') + (data.message || ''), data.ok);
+        if (data.ok && data.info) {
+          document.getElementById('aws-cred-key').textContent = data.info.access_key_masked || '—';
+          document.getElementById('aws-cred-region').textContent = data.info.region || '—';
+          document.getElementById('aws-cred-source').textContent = data.info.source;
+          document.getElementById('aws-input-secret').value = '';
+        }
+      } catch (e) {
+        _awsCredOut('Fout: ' + e, false);
+      }
+    }
+
+    async function restartContainer() {
+      if (!confirm('Container nu herstarten? De webinterface is enkele seconden onbereikbaar.')) return;
+      _awsCredOut('Herstart commando verzonden…', null);
+      try {
+        const resp = await fetch('/restart_container', { method: 'POST' });
+        const data = await resp.json();
+        _awsCredOut((data.ok ? 'OK — ' : 'FOUT — ') + (data.message || ''), data.ok);
+      } catch (e) {
+        _awsCredOut('Verbinding verbroken (waarschijnlijk aan het herstarten): ' + e, null);
+      }
+    }
+
     function toggleCanPause() {
       canPaused = !canPaused;
       document.getElementById('can-pause-btn').textContent = canPaused ? 'Hervat' : 'Pauzeer';
@@ -1607,6 +1727,72 @@ def aws_status_data():
     return {"connected": False, "last_update": None, "message": "unknown"}
 
 
+AWS_CREDENTIALS_FILE = f"{BASE_DIR}/aws_credentials.json"
+
+
+def _mask_access_key(key):
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "•" * len(key)
+    return f"{key[:4]}…{key[-4:]}"
+
+
+def _read_aws_credentials_file():
+    if not os.path.exists(AWS_CREDENTIALS_FILE):
+        return {}
+    try:
+        with open(AWS_CREDENTIALS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def aws_credentials_info():
+    """Toont actieve credentials (gemaskeerd) en herkomst."""
+    file_creds = _read_aws_credentials_file()
+    file_key = file_creds.get("access_key_id") or ""
+    file_region = file_creds.get("region") or ""
+    env_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
+    env_region = os.environ.get("AWS_DEFAULT_REGION", "")
+    active_key = file_key or env_key
+    active_region = file_region or env_region
+    source = "geen credentials gevonden"
+    if file_key:
+        source = "aws_credentials.json (UI)"
+    elif env_key:
+        source = "container env (docker-compose .env)"
+    return {
+        "access_key_masked": _mask_access_key(active_key),
+        "access_key_present": bool(active_key),
+        "region": active_region,
+        "source": source,
+        "file_present": bool(file_creds),
+        "file_updated_at": file_creds.get("updated_at"),
+    }
+
+
+def _test_aws_credentials(access_key, secret_key, region):
+    """Doet sts.get_caller_identity met de opgegeven creds. Returneert (ok, message)."""
+    try:
+        import boto3
+        from botocore.config import Config
+        sts = boto3.client(
+            "sts",
+            aws_access_key_id=access_key or None,
+            aws_secret_access_key=secret_key or None,
+            region_name=region or None,
+            config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1}),
+        )
+        ident = sts.get_caller_identity()
+        return True, f"OK — account {ident.get('Account')}, ARN {ident.get('Arn')}"
+    except Exception as e:
+        return False, str(e)
+
+
 def aws_status_text():
     data = aws_status_data()
     if data.get("connected"):
@@ -1750,6 +1936,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         can_groups=load_can_groups(),
         rate_rows=build_rate_rows(),
         aws_status_text=aws_status_text(),
+        aws_creds=aws_credentials_info(),
         s3_status=s3_status_data(),
         gnss=gnss_status_data(),
         ntrip=ntrip_config(),
@@ -1911,6 +2098,82 @@ def save_can_groups():
 
     save_config_with_groups(groups)
     return redirect(url_for("index"))
+
+
+@app.route("/aws_credentials_info")
+def aws_credentials_info_route():
+    return aws_credentials_info()
+
+
+@app.route("/save_aws_credentials", methods=["POST"])
+def save_aws_credentials():
+    access_key = (request.form.get("access_key_id") or "").strip()
+    secret_key = (request.form.get("secret_access_key") or "").strip()
+    region = (request.form.get("region") or "").strip() or "eu-north-1"
+
+    if not access_key or not secret_key:
+        return {"ok": False, "message": "Access key en secret key zijn verplicht"}, 400
+
+    test_first = request.form.get("test_first", "1") == "1"
+    if test_first:
+        ok, msg = _test_aws_credentials(access_key, secret_key, region)
+        if not ok:
+            return {"ok": False, "message": f"Credentials werken niet — niet opgeslagen. ({msg})"}, 400
+
+    payload = {
+        "access_key_id": access_key,
+        "secret_access_key": secret_key,
+        "region": region,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    tmp_path = AWS_CREDENTIALS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, AWS_CREDENTIALS_FILE)
+
+    # Update env van het lopende web-process zodat de status-test direct werkt.
+    os.environ["AWS_ACCESS_KEY_ID"] = access_key
+    os.environ["AWS_SECRET_ACCESS_KEY"] = secret_key
+    os.environ["AWS_DEFAULT_REGION"] = region
+
+    return {
+        "ok": True,
+        "message": "Credentials opgeslagen. Herstart de container om de S3-uploader de nieuwe key te laten gebruiken.",
+        "info": aws_credentials_info(),
+    }
+
+
+@app.route("/test_aws_credentials", methods=["POST"])
+def test_aws_credentials_route():
+    access_key = (request.form.get("access_key_id") or "").strip()
+    secret_key = (request.form.get("secret_access_key") or "").strip()
+    region = (request.form.get("region") or "").strip()
+
+    # Bij lege velden: test de credentials die momenteel actief zijn in dit process.
+    if not access_key and not secret_key:
+        access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
+        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        region = region or os.environ.get("AWS_DEFAULT_REGION", "")
+
+    ok, msg = _test_aws_credentials(access_key, secret_key, region)
+    return {"ok": ok, "message": msg}
+
+
+@app.route("/restart_container", methods=["POST"])
+def restart_container():
+    # Container herstart zichzelf via gemounte docker.sock (zie docker-compose.yml).
+    container = os.environ.get("HOSTNAME", "vg710")
+    try:
+        result = subprocess.run(
+            ["docker", "restart", container],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return {"ok": True, "message": f"Container '{container}' wordt herstart…"}
+        return {"ok": False, "message": result.stderr.strip() or result.stdout.strip()}, 500
+    except Exception as e:
+        return {"ok": False, "message": str(e)}, 500
 
 
 @app.route("/save_s3_settings", methods=["POST"])
