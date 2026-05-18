@@ -577,7 +577,8 @@ HTML = """
         {% endif %}
       </div>
       <div class="hero-actions">
-        <a class="button secondary" href="/download_config">Download Config + S3 + Certs</a>
+        <button type="button" id="auto-refresh-btn" class="button secondary" onclick="toggleAutoRefresh()">Auto-refresh AAN</button>
+        <a class="button secondary" href="/download_config" style="margin-left:8px;">Download Config + S3 + Certs</a>
         <a class="button secondary" href="/logout" style="margin-left:8px;">Uitloggen</a>
       </div>
     </section>
@@ -1236,7 +1237,23 @@ HTML = """
       }
     }
 
-    setInterval(refreshStatus, 5000);
+    var _autoRefreshTimer = null;
+    function _autoRefreshEnabled() {
+      try { return localStorage.getItem('autoRefresh') !== '0'; } catch(e) { return true; }
+    }
+    function setAutoRefresh(on) {
+      try { localStorage.setItem('autoRefresh', on ? '1' : '0'); } catch(e) {}
+      var btn = document.getElementById('auto-refresh-btn');
+      if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null; }
+      if (on) {
+        _autoRefreshTimer = setInterval(refreshStatus, 5000);
+        if (btn) { btn.textContent = 'Auto-refresh AAN'; btn.style.background = ''; }
+      } else {
+        if (btn) { btn.textContent = 'Auto-refresh UIT'; btn.style.background = '#fef2f2'; }
+      }
+    }
+    function toggleAutoRefresh() { setAutoRefresh(!_autoRefreshEnabled() ? true : false); }
+    setAutoRefresh(_autoRefreshEnabled());
 
     let canWindowVisible = false;
     let canPollTimer = null;
