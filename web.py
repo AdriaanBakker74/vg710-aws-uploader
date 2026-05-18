@@ -125,9 +125,35 @@ def logout():
 GITHUB_REPO = "AdriaanBakker74/vg710-aws-uploader"
 RELEASE_TAR_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/vg710-web-aws.tar"
 UPDATE_TAR_PATH = "/tmp/vg710-web-aws-update.tar"
+UPDATE_STATUS_FILE = f"{BASE_DIR}/update_status.json"
 
 _update_status = {"running": False, "log": [], "done": False, "success": None}
 _update_lock = threading.Lock()
+
+
+def _save_update_status():
+    try:
+        with open(UPDATE_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_update_status, f)
+    except Exception:
+        pass
+
+
+def _load_update_status():
+    if not os.path.exists(UPDATE_STATUS_FILE):
+        return
+    try:
+        with open(UPDATE_STATUS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            # Na een (her)start kan een update niet meer 'running' zijn — de thread is weg.
+            data["running"] = False
+            _update_status.update(data)
+    except Exception:
+        pass
+
+
+_load_update_status()
 
 _gh_version_cache = {"tag_name": None}
 _gh_version_lock = threading.Lock()
@@ -159,6 +185,7 @@ def _run_update():
     def log(msg):
         with _update_lock:
             _update_status["log"].append(msg)
+            _save_update_status()
 
     def run(cmd):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -181,18 +208,22 @@ def _run_update():
             log("Controleer of /var/run/docker.sock gemount is in de container.")
             with _update_lock:
                 _update_status.update({"running": False, "done": True, "success": False})
+                _save_update_status()
             return
 
         container_id = socket.gethostname()
         log(f"Container herstarten ({container_id})...")
-        run(["docker", "restart", container_id])
-
+        # Markeer als success vóór de restart — de restart maakt onszelf dood,
+        # dus na deze regel kunnen we niets meer schrijven.
         with _update_lock:
             _update_status.update({"running": False, "done": True, "success": True})
+            _save_update_status()
+        run(["docker", "restart", container_id])
     except Exception as e:
         with _update_lock:
             _update_status["log"].append(f"Fout: {e}")
             _update_status.update({"running": False, "done": True, "success": False})
+            _save_update_status()
 
 # --- Systeem statistieken (CPU + geheugen) ---
 _sys_stats = {"cpu_percent": None, "mem_used_mb": None, "mem_total_mb": None,
@@ -1494,17 +1525,25 @@ HTML = """
         const logEl = document.getElementById('update-log');
         const statusEl = document.getElementById('update-status');
         const btn = document.getElementById('update-btn');
-        logEl.textContent = (data.log || []).join('\\n');
-        logEl.scrollTop = logEl.scrollHeight;
+        const logText = (data.log || []).join('\\n');
+        if (logText) {
+          logEl.style.display = 'block';
+          logEl.textContent = logText;
+          logEl.scrollTop = logEl.scrollHeight;
+        }
         if (data.done) {
-          clearInterval(_updatePollTimer);
+          if (_updatePollTimer) { clearInterval(_updatePollTimer); _updatePollTimer = null; }
           btn.disabled = false;
           statusEl.textContent = data.success ? 'Gereed — herstart de container.' : 'Mislukt.';
-        } else {
+        } else if (data.running) {
           statusEl.textContent = 'Bezig…';
+          btn.disabled = true;
+          if (!_updatePollTimer) _updatePollTimer = setInterval(pollUpdateStatus, 2000);
         }
       } catch(e) { /* negeer pollingfouten */ }
     }
+
+    pollUpdateStatus();
 
     async function fetchMountpoints() {
       const btn = document.getElementById('fetch-mp-btn');
