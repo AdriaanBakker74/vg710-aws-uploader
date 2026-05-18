@@ -1250,76 +1250,82 @@ HTML = """
       }
     }
 
-    function _awsCredOut(msg, ok) {
-      const out = document.getElementById('aws-cred-output');
+    function awsCredOut(msg, ok) {
+      var out = document.getElementById('aws-cred-output');
       out.style.display = 'block';
-      out.style.borderColor = ok === true ? 'var(--ok-text)' : ok === false ? 'var(--bad-text)' : 'var(--line)';
+      var color;
+      if (ok === true) { color = 'var(--ok-text)'; }
+      else if (ok === false) { color = 'var(--bad-text)'; }
+      else { color = 'var(--line)'; }
+      out.style.borderColor = color;
       out.textContent = msg;
     }
 
     function toggleAwsCredForm() {
-      const form = document.getElementById('aws-cred-form');
-      const btn = document.getElementById('aws-cred-toggle');
-      const shown = form.style.display !== 'none';
+      var form = document.getElementById('aws-cred-form');
+      var btn = document.getElementById('aws-cred-toggle');
+      var shown = form.style.display !== 'none' && form.style.display !== '';
       form.style.display = shown ? 'none' : 'block';
-      btn.textContent = shown ? 'Wijzig…' : 'Annuleer';
+      btn.textContent = shown ? 'Wijzig...' : 'Annuleer';
     }
 
-    async function testAwsCreds(useFormValues) {
-      const body = new FormData();
+    function testAwsCreds(useFormValues) {
+      var body = new FormData();
       if (useFormValues) {
         body.append('access_key_id', document.getElementById('aws-input-key').value.trim());
         body.append('secret_access_key', document.getElementById('aws-input-secret').value);
         body.append('region', document.getElementById('aws-input-region').value.trim());
       }
-      _awsCredOut('Testen…', null);
-      try {
-        const resp = await fetch('/test_aws_credentials', { method: 'POST', body });
-        const data = await resp.json();
-        _awsCredOut((data.ok ? 'OK — ' : 'FOUT — ') + (data.message || ''), data.ok);
-      } catch (e) {
-        _awsCredOut('Fout: ' + e, false);
-      }
+      awsCredOut('Testen...', null);
+      fetch('/test_aws_credentials', { method: 'POST', body: body })
+        .then(function (resp) { return resp.json(); })
+        .then(function (data) {
+          var prefix = data.ok ? 'OK - ' : 'FOUT - ';
+          awsCredOut(prefix + (data.message || ''), data.ok);
+        })
+        .catch(function (e) { awsCredOut('Fout: ' + e, false); });
     }
 
-    async function saveAwsCreds() {
-      const key = document.getElementById('aws-input-key').value.trim();
-      const secret = document.getElementById('aws-input-secret').value;
-      const region = document.getElementById('aws-input-region').value.trim();
+    function saveAwsCreds() {
+      var key = document.getElementById('aws-input-key').value.trim();
+      var secret = document.getElementById('aws-input-secret').value;
+      var region = document.getElementById('aws-input-region').value.trim();
       if (!key || !secret) {
-        _awsCredOut('Vul access key én secret key in.', false);
+        awsCredOut('Vul access key en secret key in.', false);
         return;
       }
-      const body = new FormData();
+      var body = new FormData();
       body.append('access_key_id', key);
       body.append('secret_access_key', secret);
       body.append('region', region);
-      _awsCredOut('Testen en opslaan…', null);
-      try {
-        const resp = await fetch('/save_aws_credentials', { method: 'POST', body });
-        const data = await resp.json();
-        _awsCredOut((data.ok ? 'OK — ' : 'FOUT — ') + (data.message || ''), data.ok);
-        if (data.ok && data.info) {
-          document.getElementById('aws-cred-key').textContent = data.info.access_key_masked || '—';
-          document.getElementById('aws-cred-region').textContent = data.info.region || '—';
-          document.getElementById('aws-cred-source').textContent = data.info.source;
-          document.getElementById('aws-input-secret').value = '';
-        }
-      } catch (e) {
-        _awsCredOut('Fout: ' + e, false);
-      }
+      awsCredOut('Testen en opslaan...', null);
+      fetch('/save_aws_credentials', { method: 'POST', body: body })
+        .then(function (resp) { return resp.json(); })
+        .then(function (data) {
+          var prefix = data.ok ? 'OK - ' : 'FOUT - ';
+          awsCredOut(prefix + (data.message || ''), data.ok);
+          if (data.ok && data.info) {
+            document.getElementById('aws-cred-key').textContent = data.info.access_key_masked || '-';
+            document.getElementById('aws-cred-region').textContent = data.info.region || '-';
+            document.getElementById('aws-cred-source').textContent = data.info.source;
+            document.getElementById('aws-input-secret').value = '';
+          }
+        })
+        .catch(function (e) { awsCredOut('Fout: ' + e, false); });
     }
 
-    async function restartContainer() {
+    function restartContainer() {
       if (!confirm('Container nu herstarten? De webinterface is enkele seconden onbereikbaar.')) return;
-      _awsCredOut('Herstart commando verzonden…', null);
-      try {
-        const resp = await fetch('/restart_container', { method: 'POST' });
-        const data = await resp.json();
-        _awsCredOut((data.ok ? 'OK — ' : 'FOUT — ') + (data.message || ''), data.ok);
-      } catch (e) {
-        _awsCredOut('Verbinding verbroken (waarschijnlijk aan het herstarten): ' + e, null);
-      }
+      awsCredOut('Herstart commando verzonden...', null);
+      fetch('/restart_container', { method: 'POST' })
+        .then(function (resp) { return resp.json(); })
+        .then(function (data) {
+          var prefix = data.ok ? 'OK - ' : 'FOUT - ';
+          awsCredOut(prefix + (data.message || ''), data.ok);
+        })
+        .catch(function (e) {
+          awsCredOut('Verbinding verbroken (waarschijnlijk aan het herstarten): ' + e, null);
+        });
     }
 
     function toggleCanPause() {
