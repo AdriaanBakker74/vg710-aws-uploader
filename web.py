@@ -743,29 +743,29 @@ HTML = """
           <div>
             <strong style="font-size:14px;">AWS credentials</strong>
             <div class="muted" style="font-size:12px;margin-top:2px;">
-              Actief: <code id="aws-cred-key">{{ aws_creds.access_key_masked or "—" }}</code>
-              &nbsp;·&nbsp; regio: <code id="aws-cred-region">{{ aws_creds.region or "—" }}</code>
-              &nbsp;·&nbsp; bron: <span id="aws-cred-source">{{ aws_creds.source }}</span>
+              Actief: <code id="aws-cred-key">{{ aws_creds.access_key_masked or "-" }}</code>
+              &nbsp;&middot;&nbsp; regio: <code id="aws-cred-region">{{ aws_creds.region or "-" }}</code>
+              &nbsp;&middot;&nbsp; bron: <span id="aws-cred-source">{{ aws_creds.source }}</span>
               {% if aws_creds.file_updated_at %}
-                &nbsp;·&nbsp; bijgewerkt: <span id="aws-cred-updated">{{ aws_creds.file_updated_at }}</span>
+                &nbsp;&middot;&nbsp; bijgewerkt: <span id="aws-cred-updated">{{ aws_creds.file_updated_at }}</span>
               {% endif %}
             </div>
           </div>
           <div style="display:flex;gap:8px;">
             <button type="button" class="secondary" onclick="testAwsCreds()">Test huidige</button>
-            <button type="button" class="secondary" onclick="toggleAwsCredForm()" id="aws-cred-toggle">Wijzig…</button>
+            <button type="button" class="secondary" onclick="toggleAwsCredForm()" id="aws-cred-toggle">Wijzig...</button>
           </div>
         </div>
 
         <div id="aws-cred-form" style="display:none;margin-top:8px;">
           <p class="sub" style="margin-bottom:12px;">
-            Nieuwe IAM access key voor <code>vg710-uploader</code>. Wordt getest vóór opslaan en bewaard in <code>/data/vgapp/aws_credentials.json</code>.
+            Nieuwe IAM access key voor <code>vg710-uploader</code>. Wordt getest voor opslaan en bewaard in <code>/data/vgapp/aws_credentials.json</code>.
             De S3-uploader pikt de nieuwe key pas op na een container-herstart.
           </p>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:720px;">
             <div>
               <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Access Key ID</label>
-              <input type="text" id="aws-input-key" placeholder="AKIA…" autocomplete="off" spellcheck="false">
+              <input type="text" id="aws-input-key" placeholder="AKIA..." autocomplete="off" spellcheck="false">
             </div>
             <div>
               <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Regio</label>
@@ -773,7 +773,7 @@ HTML = """
             </div>
             <div style="grid-column:1 / -1;">
               <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Secret Access Key</label>
-              <input type="password" id="aws-input-secret" placeholder="••••••••" autocomplete="off" spellcheck="false">
+              <input type="password" id="aws-input-secret" placeholder="********" autocomplete="off" spellcheck="false">
             </div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
