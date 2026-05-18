@@ -1364,11 +1364,11 @@ HTML = """
           return '[' + ts + ']  ' + id + '  DLC=' + dlc + '  ' + data;
         });
 
-        logEl.textContent += (logEl.textContent ? '\n' : '') + lines.join('\n');
+        logEl.textContent += (logEl.textContent ? '\\n' : '') + lines.join('\\n');
 
         // Begrens het zichtbare log tot ~600 regels
-        const all = logEl.textContent.split('\n');
-        if (all.length > 600) logEl.textContent = all.slice(-500).join('\n');
+        const all = logEl.textContent.split('\\n');
+        if (all.length > 600) logEl.textContent = all.slice(-500).join('\\n');
 
         canLastSeq = frames[frames.length - 1].seq;
         canTotalFrames += frames.length;
@@ -1494,7 +1494,7 @@ HTML = """
         const logEl = document.getElementById('update-log');
         const statusEl = document.getElementById('update-status');
         const btn = document.getElementById('update-btn');
-        logEl.textContent = (data.log || []).join('\n');
+        logEl.textContent = (data.log || []).join('\\n');
         logEl.scrollTop = logEl.scrollHeight;
         if (data.done) {
           clearInterval(_updatePollTimer);
