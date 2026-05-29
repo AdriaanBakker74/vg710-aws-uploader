@@ -1744,14 +1744,15 @@ def build_rate_rows():
 def gnss_status_data():
     path = f"{BASE_DIR}/gnss_status.json"
     default = {"fix_quality": 0, "fix_label": "No fix", "lat": None, "lon": None,
-               "satellites": None, "hdop": None, "altitude": None, "ts": None}
+               "satellites": None, "hdop": None, "altitude": None, "ts": None,
+               "acc_lat": None, "acc_lon": None, "acc_alt": None}
     if not os.path.exists(path):
         return default
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict):
-                return data
+                return {**default, **data}
     except Exception:
         pass
     return default
