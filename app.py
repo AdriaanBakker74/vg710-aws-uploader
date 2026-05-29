@@ -93,6 +93,8 @@ S3_QUEUE_MAX_BYTES = int(cfg.get("s3_queue_max_mb", 500)) * 1024 * 1024
 # Minimale tijd tussen twee S3-records van dezelfde CAN-ID (downsampling).
 # Default 1.0s = max 1 Hz per ID; tragere per-ID/groep-rates blijven gelden.
 S3_CAN_MIN_INTERVAL_SEC = float(cfg.get("s3_can_min_interval_sec", 1.0))
+# Idem voor NMEA, per zin-type (GNGGA, GNHDT, ...). Default 1.0s = 1 Hz per type.
+S3_NMEA_MIN_INTERVAL_SEC = float(cfg.get("s3_nmea_min_interval_sec", 1.0))
 
 CAN_RATES = cfg.get("can_upload_rates", [])
 NTRIP_CFG = cfg.get("ntrip", {})
@@ -226,7 +228,8 @@ def find_can_group(can_id):
 SEEN_IDS = set()
 LATEST_MESSAGES = {}
 LAST_PUBLISHED = {}
-LAST_S3_CAN = {}
+S3_CAN_DUE = {}
+S3_NMEA_DUE = {}
 LOCK = threading.Lock()
 MQTT_CONNECTED = False
 
@@ -248,6 +251,7 @@ CAN_LOG_SEQ = 0
 
 GNSS_LOCK = threading.Lock()
 LATEST_GGA = None   # meest recente ruwe GGA-zin (voor upstream NTRIP als Septentrio geen GGA meestuurt)
+LATEST_GNSS_UTC = None  # UTC-tijd (hhmmss.ss) uit de laatste GGA, voor tijdkoppeling van CAN/NMEA
 GNSS_STATUS = {
     "fix_quality": 0, "fix_label": "Geen fix",
     "lat": None, "lon": None, "satellites": None,
@@ -272,6 +276,26 @@ PROXY_CLIENTS = set()
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _rate_gate(store, key, interval, mono, tol_frac=0.15):
+    """Laat per 'key' ~1/interval samples door op een vast rooster (geen drift).
+
+    Een kleine tolerantie laat frames toe die net vóór de deadline aankomen,
+    zodat een ~2 Hz-bron met jitter niet onder 1 Hz zakt. Na een gap wordt het
+    rooster opnieuw op 'mono' gebaseerd om bursts te voorkomen.
+    """
+    due = store.get(key)
+    if due is None:
+        store[key] = mono + interval
+        return True
+    if mono >= due - interval * tol_frac:
+        nxt = due + interval
+        if nxt <= mono:
+            nxt = mono + interval
+        store[key] = nxt
+        return True
+    return False
 
 
 def save_seen_ids():
@@ -349,13 +373,15 @@ def parse_gga(sentence):
             return None
         fix_quality = int(parts[6]) if parts[6] else 0
         fix_label = GGA_FIX_LABELS.get(fix_quality, f"Fix {fix_quality}")
+        utc = parts[1] or None
         if fix_quality == 0:
-            return {"fix_quality": 0, "fix_label": fix_label,
+            return {"fix_quality": 0, "fix_label": fix_label, "utc": utc,
                     "lat": None, "lon": None, "satellites": None,
                     "hdop": None, "altitude": None}
         return {
             "fix_quality": fix_quality,
             "fix_label": fix_label,
+            "utc": utc,
             "lat": nmea_to_decimal(parts[2], parts[3]),
             "lon": nmea_to_decimal(parts[4], parts[5]),
             "satellites": int(parts[7]) if parts[7] else None,
@@ -401,13 +427,17 @@ def parse_gst(sentence):
 
 
 def update_gnss_status(sentence, ts):
-    global LATEST_GGA
+    global LATEST_GGA, LATEST_GNSS_UTC
     parsed = None
     if "GGA" in sentence:
         parsed = parse_gga(sentence)
-        if parsed and parsed.get("fix_quality", 0) > 0:
-            with GNSS_LOCK:
-                LATEST_GGA = sentence.strip()
+        if parsed:
+            if parsed.get("utc"):
+                with GNSS_LOCK:
+                    LATEST_GNSS_UTC = parsed["utc"]
+            if parsed.get("fix_quality", 0) > 0:
+                with GNSS_LOCK:
+                    LATEST_GGA = sentence.strip()
     elif "GSA" in sentence:
         parsed = parse_gsa(sentence)
     elif "GST" in sentence:
@@ -752,6 +782,8 @@ def can_reader_loop():
 
                 ts = now()
                 _group = find_can_group(msg.arbitration_id)
+                with GNSS_LOCK:
+                    gnss_utc = LATEST_GNSS_UTC
                 payload = {
                     "device_id": DEVICE_ID,
                     "channel": CAN_CHANNEL,
@@ -764,6 +796,7 @@ def can_reader_loop():
                     "data": list(msg.data),
                     "data_hex": msg.data.hex().upper(),
                     "ts": ts,
+                    "gnss_utc": gnss_utc,
                     "group_name": _group["name"] if _group else None,
                     "rate_limit_sec": CAN_RATE_MAP.get(msg.arbitration_id)
                         or (_group["upload_rate_sec"] if _group else None),
@@ -786,7 +819,7 @@ def can_reader_loop():
                         "ts": ts,
                     })
 
-                # S3 downsamplen: per CAN-ID hoogstens 1 record per interval.
+                # S3 downsamplen: per CAN-ID ~1 record per interval op een vast rooster.
                 # Default 1 Hz; een tragere per-ID/groep-rate krijgt voorrang.
                 s3_interval = S3_CAN_MIN_INTERVAL_SEC
                 cfg_rate = CAN_RATE_MAP.get(msg.arbitration_id)
@@ -794,9 +827,7 @@ def can_reader_loop():
                     cfg_rate = _group.get("upload_rate_sec")
                 if cfg_rate is not None and cfg_rate > s3_interval:
                     s3_interval = cfg_rate
-                mono = time.monotonic()
-                if mono - LAST_S3_CAN.get(msg.arbitration_id, 0.0) >= s3_interval:
-                    LAST_S3_CAN[msg.arbitration_id] = mono
+                if _rate_gate(S3_CAN_DUE, msg.arbitration_id, s3_interval, time.monotonic()):
                     append_s3_record(payload)
 
         except Exception as e:
@@ -1231,6 +1262,12 @@ def nmea_reader_loop(source):
                 ts = now()
                 if "GGA" in line or "GSA" in line or "GST" in line:
                     update_gnss_status(line, ts)
+                # S3 per zin-type downsamplen naar ~1 Hz (live-status/NTRIP blijft elke zin).
+                ntype = line.split(",", 1)[0].lstrip("$") or "?"
+                if not _rate_gate(S3_NMEA_DUE, ntype, S3_NMEA_MIN_INTERVAL_SEC, time.monotonic()):
+                    continue
+                with GNSS_LOCK:
+                    gnss_utc = LATEST_GNSS_UTC
                 append_nmea_record(
                     {
                         "device_id": DEVICE_ID,
@@ -1239,6 +1276,7 @@ def nmea_reader_loop(source):
                         "port": port,
                         "sentence": line,
                         "ts": ts,
+                        "gnss_utc": gnss_utc,
                     }
                 )
         except Exception as e:
