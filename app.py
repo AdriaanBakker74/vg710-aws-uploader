@@ -90,6 +90,9 @@ S3_NMEA_FLUSH_INTERVAL_SEC = int(cfg.get("s3_nmea_flush_interval_sec", 30))
 S3_QUEUE_DIR = f"{BASE}/s3_queue"
 S3_UPLOAD_INTERVAL_SEC = int(cfg.get("s3_upload_interval_sec", 5))
 S3_QUEUE_MAX_BYTES = int(cfg.get("s3_queue_max_mb", 500)) * 1024 * 1024
+# Minimale tijd tussen twee S3-records van dezelfde CAN-ID (downsampling).
+# Default 1.0s = max 1 Hz per ID; tragere per-ID/groep-rates blijven gelden.
+S3_CAN_MIN_INTERVAL_SEC = float(cfg.get("s3_can_min_interval_sec", 1.0))
 
 CAN_RATES = cfg.get("can_upload_rates", [])
 NTRIP_CFG = cfg.get("ntrip", {})
@@ -223,6 +226,7 @@ def find_can_group(can_id):
 SEEN_IDS = set()
 LATEST_MESSAGES = {}
 LAST_PUBLISHED = {}
+LAST_S3_CAN = {}
 LOCK = threading.Lock()
 MQTT_CONNECTED = False
 
@@ -782,7 +786,18 @@ def can_reader_loop():
                         "ts": ts,
                     })
 
-                append_s3_record(payload)
+                # S3 downsamplen: per CAN-ID hoogstens 1 record per interval.
+                # Default 1 Hz; een tragere per-ID/groep-rate krijgt voorrang.
+                s3_interval = S3_CAN_MIN_INTERVAL_SEC
+                cfg_rate = CAN_RATE_MAP.get(msg.arbitration_id)
+                if cfg_rate is None and _group:
+                    cfg_rate = _group.get("upload_rate_sec")
+                if cfg_rate is not None and cfg_rate > s3_interval:
+                    s3_interval = cfg_rate
+                mono = time.monotonic()
+                if mono - LAST_S3_CAN.get(msg.arbitration_id, 0.0) >= s3_interval:
+                    LAST_S3_CAN[msg.arbitration_id] = mono
+                    append_s3_record(payload)
 
         except Exception as e:
             print(f"CAN reader error on {CAN_CHANNEL}: {e}", flush=True)
