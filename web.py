@@ -2496,5 +2496,295 @@ def gh_update_status():
         return dict(_update_status)
 
 
+# ---------------------------------------------------------------------------
+# Dual GNSS — vergelijking van de primaire (Septentrio) met een externe
+# ontvanger (Stonex S599). Eigen webserver op poort 599.
+# ---------------------------------------------------------------------------
+
+DUAL_GNSS_STATUS_FILE = f"{BASE_DIR}/dual_gnss_status.json"
+DUAL_GNSS_MEASUREMENTS_FILE = f"{BASE_DIR}/dual_gnss_measurements.json"
+
+
+def _read_json_file(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def load_dual_measurements():
+    data = _read_json_file(DUAL_GNSS_MEASUREMENTS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def save_dual_measurements(items):
+    with open(DUAL_GNSS_MEASUREMENTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2)
+
+
+DUAL_HTML = """<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dual GNSS - VG710</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#111;padding:16px;}
+  h1{font-size:20px;margin-bottom:4px;}
+  .sub{font-size:13px;color:#6b7280;margin-bottom:16px;}
+  .card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:18px 20px;margin-bottom:16px;}
+  .card h2{font-size:15px;margin-bottom:12px;}
+  label{display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;}
+  input[type=text]{padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;width:220px;}
+  button{padding:9px 14px;background:#3b5bdb;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;}
+  button:hover{background:#2f4ac5;}
+  button.danger{background:#dc2626;padding:5px 10px;font-size:12px;}
+  .row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end;}
+  .col{flex:1;min-width:200px;}
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;}
+  .ok{background:#dcfce7;color:#166534;}
+  .bad{background:#fee2e2;color:#991b1b;}
+  .muted{color:#6b7280;font-size:13px;}
+  .kv{font-size:13px;margin:2px 0;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee;}
+  .diffgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:12px;}
+  .diffgrid .box{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center;}
+  .diffgrid .lbl{font-size:11px;color:#6b7280;}
+  .diffgrid .val{font-size:18px;font-weight:700;}
+</style>
+</head>
+<body>
+<h1>Dual GNSS - vergelijking</h1>
+<p class="sub">Primair (Septentrio) versus externe ontvanger (Stonex S599)</p>
+
+<div class="card">
+  <h2>Koppeling externe ontvanger</h2>
+  <div class="row">
+    <div><label><input type="checkbox" id="cfg-enabled"> Koppeling actief</label></div>
+    <div>
+      <label>WiFi-IP van de S599</label>
+      <input type="text" id="cfg-ip" placeholder="bijv. 192.168.127.60">
+    </div>
+    <div><button onclick="saveConfig()">Opslaan</button></div>
+    <div id="cfg-msg" class="muted"></div>
+  </div>
+  <p class="kv" style="margin-top:10px;">Status: <span id="conn-pill" class="pill bad">niet verbonden</span></p>
+</div>
+
+<div class="card">
+  <h2>Live posities</h2>
+  <div class="row">
+    <div class="col">
+      <div class="kv"><strong>A - Septentrio</strong> <span id="a-fix" class="pill bad">-</span></div>
+      <div class="kv">Lat: <span id="a-lat">-</span></div>
+      <div class="kv">Lon: <span id="a-lon">-</span></div>
+      <div class="kv">Hoogte: <span id="a-alt">-</span> m</div>
+    </div>
+    <div class="col">
+      <div class="kv"><strong>B - S599</strong> <span id="b-fix" class="pill bad">-</span></div>
+      <div class="kv">Lat: <span id="b-lat">-</span></div>
+      <div class="kv">Lon: <span id="b-lon">-</span></div>
+      <div class="kv">Hoogte: <span id="b-alt">-</span> m</div>
+    </div>
+  </div>
+  <div class="diffgrid">
+    <div class="box"><div class="lbl">dN (noord)</div><div class="val" id="d-n">-</div></div>
+    <div class="box"><div class="lbl">dE (oost)</div><div class="val" id="d-e">-</div></div>
+    <div class="box"><div class="lbl">dH (hoogte)</div><div class="val" id="d-u">-</div></div>
+    <div class="box"><div class="lbl">2D afstand</div><div class="val" id="d-2d">-</div></div>
+    <div class="box"><div class="lbl">3D afstand</div><div class="val" id="d-3d">-</div></div>
+  </div>
+  <p class="muted" id="diff-ts" style="margin-top:8px;"></p>
+</div>
+
+<div class="card">
+  <h2>Metingen</h2>
+  <div class="row">
+    <div>
+      <label>Naam / label</label>
+      <input type="text" id="m-label" placeholder="bijv. As-lijn 1 punt A">
+    </div>
+    <div><button onclick="saveMeasurement()">Meting opslaan</button></div>
+    <div id="m-msg" class="muted"></div>
+  </div>
+  <table style="margin-top:14px;">
+    <thead><tr><th>Label</th><th>Tijd</th><th>dN</th><th>dE</th><th>dH</th><th>2D</th><th></th></tr></thead>
+    <tbody id="m-rows"><tr><td colspan="7" class="muted">Nog geen metingen.</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+(function(){
+  var cfgTouched = false;
+  function $(id){ return document.getElementById(id); }
+  function fmt(v, d){ return (v === null || v === undefined) ? '-' : Number(v).toFixed(d); }
+  function pill(el, ok, text){ el.className = 'pill ' + (ok ? 'ok' : 'bad'); el.textContent = text; }
+
+  function pollStatus(){
+    fetch('/dual_status_json').then(function(r){ return r.json(); }).then(function(d){
+      var cfg = d.config || {};
+      if(!cfgTouched){ $('cfg-enabled').checked = !!cfg.enabled; }
+      if(document.activeElement !== $('cfg-ip')){ $('cfg-ip').value = cfg.wifi_ip || ''; }
+
+      var s = d.status || {};
+      var a = s.a || {}, b = s.b || {}, diff = s.diff;
+
+      pill($('conn-pill'), !!b.connected, b.connected ? 'verbonden' : 'niet verbonden');
+      pill($('a-fix'), (a.fix_quality || 0) > 0, a.fix_label || '-');
+      $('a-lat').textContent = fmt(a.lat, 8);
+      $('a-lon').textContent = fmt(a.lon, 8);
+      $('a-alt').textContent = fmt(a.altitude, 3);
+      pill($('b-fix'), (b.fix_quality || 0) > 0, b.fix_label || '-');
+      $('b-lat').textContent = fmt(b.lat, 8);
+      $('b-lon').textContent = fmt(b.lon, 8);
+      $('b-alt').textContent = fmt(b.altitude, 3);
+
+      if(diff){
+        $('d-n').textContent = fmt(diff.d_north, 3);
+        $('d-e').textContent = fmt(diff.d_east, 3);
+        $('d-u').textContent = fmt(diff.d_up, 3);
+        $('d-2d').textContent = fmt(diff.dist_2d, 3);
+        $('d-3d').textContent = fmt(diff.dist_3d, 3);
+        $('diff-ts').textContent = 'Laatste update: ' + (s.ts || '-');
+      } else {
+        $('d-n').textContent = '-'; $('d-e').textContent = '-'; $('d-u').textContent = '-';
+        $('d-2d').textContent = '-'; $('d-3d').textContent = '-';
+        $('diff-ts').textContent = 'Beide ontvangers nodig voor een verschil.';
+      }
+    }).catch(function(){});
+  }
+
+  window.saveConfig = function(){
+    var body = new URLSearchParams();
+    body.append('enabled', $('cfg-enabled').checked ? '1' : '0');
+    body.append('wifi_ip', $('cfg-ip').value.replace(/^\\s+|\\s+$/g, ''));
+    fetch('/dual_config', { method: 'POST', body: body }).then(function(r){ return r.json(); }).then(function(){
+      $('cfg-msg').textContent = 'Opgeslagen.';
+      setTimeout(function(){ $('cfg-msg').textContent = ''; }, 2000);
+    });
+  };
+
+  window.saveMeasurement = function(){
+    var body = new URLSearchParams();
+    body.append('label', $('m-label').value.replace(/^\\s+|\\s+$/g, ''));
+    fetch('/dual_measure', { method: 'POST', body: body }).then(function(r){ return r.json(); }).then(function(){
+      $('m-label').value = '';
+      $('m-msg').textContent = 'Meting opgeslagen.';
+      setTimeout(function(){ $('m-msg').textContent = ''; }, 2000);
+      loadMeasurements();
+    });
+  };
+
+  window.deleteMeasurement = function(id){
+    var body = new URLSearchParams();
+    body.append('id', id);
+    fetch('/dual_measure_delete', { method: 'POST', body: body }).then(function(){ loadMeasurements(); });
+  };
+
+  function loadMeasurements(){
+    fetch('/dual_measurements').then(function(r){ return r.json(); }).then(function(d){
+      var items = d.items || [];
+      var tb = $('m-rows');
+      if(!items.length){ tb.innerHTML = '<tr><td colspan="7" class="muted">Nog geen metingen.</td></tr>'; return; }
+      var html = '';
+      for(var i = items.length - 1; i >= 0; i--){
+        var m = items[i], df = m.diff || {};
+        html += '<tr><td>' + (m.label || '') + '</td>' +
+          '<td class="muted">' + (m.ts || '-') + '</td>' +
+          '<td>' + fmt(df.d_north, 3) + '</td>' +
+          '<td>' + fmt(df.d_east, 3) + '</td>' +
+          '<td>' + fmt(df.d_up, 3) + '</td>' +
+          '<td>' + fmt(df.dist_2d, 3) + '</td>' +
+          '<td><button class="danger" onclick="deleteMeasurement(' + m.id + ')">x</button></td></tr>';
+      }
+      tb.innerHTML = html;
+    }).catch(function(){});
+  }
+
+  $('cfg-enabled').addEventListener('change', function(){ cfgTouched = true; });
+  pollStatus();
+  loadMeasurements();
+  setInterval(pollStatus, 1000);
+})();
+</script>
+</body>
+</html>"""
+
+
+dual_app = Flask("dual_gnss")
+
+
+@dual_app.route("/")
+def dual_index():
+    return DUAL_HTML
+
+
+@dual_app.route("/dual_status_json")
+def dual_status_json():
+    cfg = load_config_data().get("dual_gnss", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return {
+        "config": {"enabled": bool(cfg.get("enabled", False)), "wifi_ip": cfg.get("wifi_ip", "")},
+        "status": _read_json_file(DUAL_GNSS_STATUS_FILE, {}),
+    }
+
+
+@dual_app.route("/dual_config", methods=["POST"])
+def dual_config():
+    cfg = load_config_data()
+    d = cfg.get("dual_gnss", {})
+    if not isinstance(d, dict):
+        d = {}
+    d["enabled"] = request.form.get("enabled") == "1"
+    d["wifi_ip"] = (request.form.get("wifi_ip") or "").strip()
+    cfg["dual_gnss"] = d
+    save_config_data(cfg)
+    return {"ok": True, "dual_gnss": d}
+
+
+@dual_app.route("/dual_measure", methods=["POST"])
+def dual_measure():
+    status = _read_json_file(DUAL_GNSS_STATUS_FILE, {})
+    label = (request.form.get("label") or "").strip() or "Meting"
+    items = load_dual_measurements()
+    entry = {
+        "id": int(time.time() * 1000),
+        "label": label,
+        "ts": status.get("ts"),
+        "a": status.get("a"),
+        "b": status.get("b"),
+        "diff": status.get("diff"),
+    }
+    items.append(entry)
+    save_dual_measurements(items)
+    return {"ok": True, "entry": entry}
+
+
+@dual_app.route("/dual_measurements")
+def dual_measurements():
+    return {"items": load_dual_measurements()}
+
+
+@dual_app.route("/dual_measure_delete", methods=["POST"])
+def dual_measure_delete():
+    try:
+        mid = int(request.form.get("id", "0"))
+    except ValueError:
+        mid = 0
+    items = [m for m in load_dual_measurements() if m.get("id") != mid]
+    save_dual_measurements(items)
+    return {"ok": True}
+
+
 if __name__ == "__main__":
+    threading.Thread(
+        target=lambda: dual_app.run(host="0.0.0.0", port=599, threaded=True, use_reloader=False),
+        daemon=True,
+    ).start()
     app.run(host="0.0.0.0", port=8080, threaded=True)

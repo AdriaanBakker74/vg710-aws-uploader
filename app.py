@@ -2,6 +2,7 @@
 import base64
 import collections
 import json
+import math
 import os
 import socket
 import threading
@@ -110,6 +111,22 @@ NTRIP_PROXY_PORT = int(NTRIP_PROXY_CFG.get("port", 7791) or 7791)
 NTRIP_PROXY_USERNAME = NTRIP_PROXY_CFG.get("username", "proxyuser")
 NTRIP_PROXY_PASSWORD = NTRIP_PROXY_CFG.get("password", "proxypass")
 NTRIP_PROXY_MOUNTPOINT = NTRIP_PROXY_CFG.get("mountpoint", "proxymountpoint")
+
+# Tweede (externe) GNSS-ontvanger, bv. Stonex S599, gekoppeld als NTRIP-client
+# naar onze proxy. Wordt herkend op WiFi-IP; krijgt dezelfde RTCM-correcties.
+DUAL_GNSS_STATUS_FILE = f"{BASE}/dual_gnss_status.json"
+
+
+def get_dual_gnss_config():
+    """Lees de dual-GNSS-koppeling live uit config.json (runtime-update zonder restart)."""
+    try:
+        with open(f"{BASE}/config.json", encoding="utf-8") as f:
+            c = json.load(f)
+        d = c.get("dual_gnss", {})
+        return bool(d.get("enabled", False)), (d.get("wifi_ip", "") or "").strip()
+    except Exception:
+        d = cfg.get("dual_gnss", {})
+        return bool(d.get("enabled", False)), (d.get("wifi_ip", "") or "").strip()
 
 
 def build_nmea_sources():
@@ -235,6 +252,18 @@ GNSS_STATUS = {
     "acc_lat": None, "acc_lon": None, "acc_alt": None,
     "ts": None,
 }
+
+# Positie B = de externe ontvanger (S599); gevuld uit de GGA die hij als
+# NTRIP-client over de proxy stuurt.
+POSITION_B_LOCK = threading.Lock()
+POSITION_B = {
+    "connected": False, "fix_quality": 0, "fix_label": "Geen fix",
+    "lat": None, "lon": None, "altitude": None, "ts": None,
+}
+
+# Lokale NTRIP-clients die RTCM-correcties van de gedeelde upstream ontvangen.
+PROXY_CLIENTS_LOCK = threading.Lock()
+PROXY_CLIENTS = set()
 
 
 def now():
@@ -873,90 +902,139 @@ def connect_ntrip_socket(gga_sentence=None):
     return sock, initial_payload
 
 
-def extract_gga_from_request(raw_request):
+def register_proxy_client(sock):
+    with PROXY_CLIENTS_LOCK:
+        PROXY_CLIENTS.add(sock)
+
+
+def unregister_proxy_client(sock):
+    with PROXY_CLIENTS_LOCK:
+        PROXY_CLIENTS.discard(sock)
+
+
+def proxy_client_count():
+    with PROXY_CLIENTS_LOCK:
+        return len(PROXY_CLIENTS)
+
+
+def broadcast_rtcm(data):
+    """Stuur RTCM naar alle verbonden lokale clients; ruim dode verbindingen op."""
+    with PROXY_CLIENTS_LOCK:
+        clients = list(PROXY_CLIENTS)
+    for sock in clients:
+        try:
+            sock.sendall(data)
+        except Exception:
+            unregister_proxy_client(sock)
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def _local_offset(lat_a, lon_a, alt_a, lat_b, lon_b, alt_b):
+    """Verschil B - A in meters via lokaal tangentvlak (nauwkeurig op korte afstand)."""
+    R = 6378137.0  # WGS84 grote halve as
+    lat_mid = math.radians((lat_a + lat_b) / 2.0)
+    d_north = math.radians(lat_b - lat_a) * R
+    d_east = math.radians(lon_b - lon_a) * R * math.cos(lat_mid)
+    d_up = (alt_b - alt_a) if (alt_a is not None and alt_b is not None) else None
+    return d_north, d_east, d_up
+
+
+def write_dual_gnss_status():
+    """Bereken het live verschil tussen ontvanger A (Septentrio) en B (S599) en schrijf naar schijf."""
+    with GNSS_LOCK:
+        a = dict(GNSS_STATUS)
+    with POSITION_B_LOCK:
+        b = dict(POSITION_B)
+    payload = {"a": a, "b": b, "diff": None, "ts": now()}
     try:
-        text = raw_request.decode("latin1", errors="ignore")
+        if a.get("lat") is not None and b.get("lat") is not None:
+            d_north, d_east, d_up = _local_offset(
+                a["lat"], a["lon"], a.get("altitude"),
+                b["lat"], b["lon"], b.get("altitude"),
+            )
+            dist_2d = math.sqrt(d_north * d_north + d_east * d_east)
+            dist_3d = (
+                math.sqrt(d_north * d_north + d_east * d_east + d_up * d_up)
+                if d_up is not None else None
+            )
+            payload["diff"] = {
+                "d_north": round(d_north, 4),
+                "d_east": round(d_east, 4),
+                "d_up": round(d_up, 4) if d_up is not None else None,
+                "dist_2d": round(dist_2d, 4),
+                "dist_3d": round(dist_3d, 4) if dist_3d is not None else None,
+            }
+    except Exception as e:
+        print(f"Dual GNSS diff fout: {e}", flush=True)
+    try:
+        with open(DUAL_GNSS_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        print(f"Error saving dual GNSS status: {e}", flush=True)
+
+
+def update_position_b(raw):
+    """Parse de GGA van de externe ontvanger (S599) en werk positie B bij."""
+    try:
+        text = raw.decode("latin1", errors="ignore")
     except Exception:
-        return None
+        return
+    for line in text.replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if not line or "GGA" not in line or not line.startswith("$"):
+            continue
+        parsed = parse_gga(line)
+        if not parsed:
+            continue
+        with POSITION_B_LOCK:
+            POSITION_B.update({
+                "connected": True,
+                "fix_quality": parsed.get("fix_quality", 0),
+                "fix_label": parsed.get("fix_label"),
+                "lat": parsed.get("lat"),
+                "lon": parsed.get("lon"),
+                "altitude": parsed.get("altitude"),
+                "ts": now(),
+            })
+        write_dual_gnss_status()
 
-    for line in text.split("\r\n"):
-        if line.startswith("$") and "GGA" in line:
-            return line.strip()
-        if line.lower().startswith("ntrip-gga:"):
-            value = line.split(":", 1)[1].strip()
-            if value.startswith("$") and "GGA" in value:
-                return value
-    return None
 
+def ntrip_upstream_manager():
+    """Eén gedeelde upstream-verbinding met de caster; RTCM wordt naar alle clients verdeeld.
 
-
-def bridge_upstream_to_client(client_sock, upstream_sock):
+    GGA naar de caster komt uitsluitend van de primaire ontvanger (LATEST_GGA van de
+    Septentrio); de GGA van de externe ontvanger gaat NIET naar de caster.
+    """
     while True:
-        data = upstream_sock.recv(4096)
-        if not data:
-            raise RuntimeError("Upstream NTRIP stream gesloten")
-        client_sock.sendall(data)
+        if proxy_client_count() == 0:
+            time.sleep(1)
+            continue
 
-
-
-def bridge_client_to_upstream(client_sock, upstream_sock):
-    while True:
-        data = client_sock.recv(1024)
-        if not data:
-            raise RuntimeError("NTRIP client verbinding gesloten")
-        if b"GGA" in data:
-            upstream_sock.sendall(data)
-
-
-def proxy_rtcm_to_client(client_sock, gga_sentence=None):
-    while True:
         host, _port, mountpoint, _user, _pass = get_current_ntrip_upstream()
         if not (host and mountpoint):
-            print("Upstream NTRIP niet geconfigureerd; proxy wacht...", flush=True)
+            print("Upstream NTRIP niet geconfigureerd; wacht...", flush=True)
             time.sleep(NTRIP_RECONNECT_SEC)
             continue
 
         upstream_sock = None
-        upstream_to_client_thread = None
-        client_to_upstream_thread = None
         stop_event = threading.Event()
-
         try:
-            # Gebruik GGA van Septentrio, anders de laatste bekende positie uit de NMEA-stream
-            effective_gga = gga_sentence
-            if not effective_gga:
-                with GNSS_LOCK:
-                    effective_gga = LATEST_GGA
-            if not effective_gga:
-                print("Upstream NTRIP: geen GGA beschikbaar, verbinding zonder positie", flush=True)
-
+            with GNSS_LOCK:
+                effective_gga = LATEST_GGA
             print(
                 f"Upstream NTRIP verbinden: {host}:{_port}/{mountpoint} gga={bool(effective_gga)}",
                 flush=True,
             )
             upstream_sock, initial = connect_ntrip_socket(gga_sentence=effective_gga)
-
+            upstream_sock.settimeout(60)
             if initial:
-                client_sock.sendall(initial)
-
-            def upstream_worker():
-                try:
-                    bridge_upstream_to_client(client_sock, upstream_sock)
-                except Exception as e:
-                    print(f"Upstream->client gestopt: {e}", flush=True)
-                finally:
-                    stop_event.set()
-
-            def client_worker():
-                try:
-                    bridge_client_to_upstream(client_sock, upstream_sock)
-                except Exception as e:
-                    print(f"Client->upstream gestopt: {e}", flush=True)
-                finally:
-                    stop_event.set()
+                broadcast_rtcm(initial)
 
             def gga_worker():
-                """Stuur elke 10 seconden een GGA naar de upstream caster (VRS vereiste)."""
+                """Stuur elke 10 s de primaire GGA naar de caster (VRS-vereiste)."""
                 while not stop_event.is_set():
                     stop_event.wait(10)
                     if stop_event.is_set():
@@ -969,20 +1047,22 @@ def proxy_rtcm_to_client(client_sock, gga_sentence=None):
                         except Exception:
                             break
 
-            threading.Thread(target=upstream_worker, daemon=True).start()
-            threading.Thread(target=client_worker, daemon=True).start()
             threading.Thread(target=gga_worker, daemon=True).start()
 
-            while not stop_event.is_set():
-                time.sleep(0.2)
-
-            return
-        except OSError:
-            print("NTRIP proxy: client verbinding verbroken", flush=True)
-            return
+            while True:
+                data = upstream_sock.recv(4096)
+                if not data:
+                    raise RuntimeError("Upstream NTRIP stream gesloten")
+                broadcast_rtcm(data)
+                if proxy_client_count() == 0:
+                    print("Geen NTRIP-clients meer; upstream sluiten", flush=True)
+                    break
+        except socket.timeout:
+            print("Upstream NTRIP timeout; opnieuw verbinden", flush=True)
         except Exception as e:
             print(f"Upstream NTRIP fout: {e}", flush=True)
         finally:
+            stop_event.set()
             if upstream_sock:
                 try:
                     upstream_sock.close()
@@ -994,6 +1074,7 @@ def proxy_rtcm_to_client(client_sock, gga_sentence=None):
 
 def handle_ntrip_client(client_sock, addr):
     """Verwerk één inkomende NTRIP-clientverbinding."""
+    is_secondary = False
     try:
         raw = b""
         while b"\r\n\r\n" not in raw and len(raw) < 8192:
@@ -1003,7 +1084,6 @@ def handle_ntrip_client(client_sock, addr):
             raw += chunk
 
         request_str = raw.decode("latin1", errors="ignore")
-        gga_sentence = extract_gga_from_request(raw)
         lines = request_str.split("\r\n")
         parts = lines[0].split()
 
@@ -1051,15 +1131,37 @@ def handle_ntrip_client(client_sock, addr):
             return
 
         client_sock.sendall(b"ICY 200 OK\r\nContent-Type: gnss/data\r\n\r\n")
+
+        enabled, s599_ip = get_dual_gnss_config()
+        is_secondary = bool(enabled and s599_ip and addr[0] == s599_ip)
         print(
-            f"NTRIP proxy: client {addr} verbonden op mountpoint '{mountpoint}', gga_present={bool(gga_sentence)}",
+            f"NTRIP proxy: client {addr} verbonden op '{mountpoint}' (secondary={is_secondary})",
             flush=True,
         )
-        proxy_rtcm_to_client(client_sock, gga_sentence=gga_sentence)
+
+        register_proxy_client(client_sock)
+        if is_secondary:
+            with POSITION_B_LOCK:
+                POSITION_B["connected"] = True
+            write_dual_gnss_status()
+
+        # Lees inkomende data (GGA) van de client. Die gaat NIET naar de caster;
+        # voor de externe ontvanger gebruiken we de GGA wel lokaal voor positie B.
+        while True:
+            data = client_sock.recv(1024)
+            if not data:
+                break
+            if is_secondary and b"GGA" in data:
+                update_position_b(data)
 
     except Exception as e:
         print(f"NTRIP proxy client fout ({addr}): {e}", flush=True)
     finally:
+        unregister_proxy_client(client_sock)
+        if is_secondary:
+            with POSITION_B_LOCK:
+                POSITION_B["connected"] = False
+            write_dual_gnss_status()
         try:
             client_sock.close()
         except Exception:
@@ -1151,6 +1253,7 @@ threading.Thread(target=s3_upload_worker, daemon=True).start()
 
 if NTRIP_ENABLED:
     threading.Thread(target=ntrip_proxy_server, daemon=True).start()
+    threading.Thread(target=ntrip_upstream_manager, daemon=True).start()
 
 for source in NMEA_SOURCES:
     threading.Thread(target=nmea_reader_loop, args=(source,), daemon=True).start()
