@@ -278,6 +278,14 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _write_atomic(path, text):
+    """Schrijf naar een temp-bestand en hernoem, zodat lezers nooit een halve write zien."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
 def _rate_gate(store, key, interval, mono, tol_frac=0.15):
     """Laat per 'key' ~1/interval samples door op een vast rooster (geen drift).
 
@@ -309,8 +317,7 @@ def save_seen_ids():
                     "rate_limit_sec": CAN_RATE_MAP.get(can_id),
                 }
             )
-        with open(CAN_IDS_FILE, "w", encoding="utf-8") as f:
-            json.dump(formatted, f, indent=2)
+        _write_atomic(CAN_IDS_FILE, json.dumps(formatted, indent=2))
     except Exception as e:
         print(f"Error saving CAN IDs: {e}", flush=True)
 
@@ -322,8 +329,7 @@ def save_aws_status(connected, message):
             "message": message,
             "last_update": now(),
         }
-        with open(AWS_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        _write_atomic(AWS_STATUS_FILE, json.dumps(payload, indent=2))
     except Exception as e:
         print(f"Error saving AWS status: {e}", flush=True)
 
@@ -335,8 +341,7 @@ def save_s3_status():
                 "can": dict(S3_CAN_STATS),
                 "nmea": dict(S3_NMEA_STATS),
             }
-        with open(S3_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        _write_atomic(S3_STATUS_FILE, json.dumps(payload, indent=2))
     except Exception as e:
         print(f"Error saving S3 status: {e}", flush=True)
 
@@ -453,8 +458,7 @@ def update_gnss_status(sentence, ts):
     try:
         with GNSS_LOCK:
             payload = dict(GNSS_STATUS)
-        with open(GNSS_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        _write_atomic(GNSS_STATUS_FILE, json.dumps(payload, indent=2))
     except Exception as e:
         print(f"Error saving GNSS status: {e}", flush=True)
 
@@ -875,8 +879,7 @@ def save_can_latest():
         snapshot.sort(key=lambda m: m.get("id", 0))
         with CAN_LOG_LOCK:
             log_snapshot = list(CAN_LOG)
-        with open(CAN_LATEST_FILE, "w", encoding="utf-8") as f:
-            json.dump({"latest": snapshot, "log": log_snapshot}, f, separators=(",", ":"))
+        _write_atomic(CAN_LATEST_FILE, json.dumps({"latest": snapshot, "log": log_snapshot}, separators=(",", ":")))
     except Exception as exc:
         print(f"Error saving can_latest.json: {exc}", flush=True)
 
@@ -1016,8 +1019,7 @@ def write_dual_gnss_status():
     except Exception as e:
         print(f"Dual GNSS diff fout: {e}", flush=True)
     try:
-        with open(DUAL_GNSS_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        _write_atomic(DUAL_GNSS_STATUS_FILE, json.dumps(payload, indent=2))
     except Exception as e:
         print(f"Error saving dual GNSS status: {e}", flush=True)
 
