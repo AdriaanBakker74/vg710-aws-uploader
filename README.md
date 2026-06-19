@@ -13,7 +13,8 @@ Ontwikkeld door **Bakker Machine Control**.
 | CAN-bus uitlezen | Leest alle frames van `can0` via SocketCAN, met automatische herverbinding |
 | CAN sensor groepen | Groepeert CAN IDs op bereik (bijv. 0x180–0x183) met naam en upload rate |
 | AWS IoT MQTT | Publiceert CAN-frames en heartbeats naar AWS IoT Core (TLS) |
-| S3 upload | Batcht ruwe CAN- en NMEA-data als NDJSON naar S3 |
+| S3 upload | Batcht ruwe CAN- en NMEA-data als NDJSON naar S3, gesamplede op een vast 1 Hz-rooster (sample-and-hold) |
+| Sensor-activatie | Stuurt NMT Start zodat Völkel-sensoren data sturen; periodiek (instelbaar) of handmatig via knop |
 | NTRIP-proxy | Septentrio verbindt als NTRIP-client; app haalt RTCM-correcties op bij externe caster |
 | NMEA-lezer | Leest GGA/GSA/GST van de Septentrio via TCP voor positie en kwaliteitsdata |
 | Web UI | Configuratiepaneel op poort 8080 |
@@ -48,6 +49,50 @@ Ontwikkeld door **Bakker Machine Control**.
 
 ---
 
+## Dataverwerking & S3-wegschrijven
+
+Ruwe data wordt als **NDJSON** (één JSON-object per regel) in batches naar S3 geschreven. De pijplijn van bus → S3:
+
+### 1. Sample-and-hold op een vast 1 Hz-rooster
+
+Niet elke binnenkomende frame gaat naar S3 — dat zou de bucket vervuilen bij snelle sensoren. In plaats daarvan:
+
+- **Per CAN-ID** houdt `app.py` één variabele bij met de **laatst ontvangen frame** (`S3_CAN_PENDING`). Elke nieuwe frame overschrijft de vorige.
+- Een aparte sampler-thread (`can_s3_sampler_loop`) tikt op een **vast rooster** (default 1 Hz). Op elke tik wordt per ID de meest recente waarde gepakt, naar S3 geschreven en de buffer **gereset**.
+- Komt er in een interval geen nieuwe frame? Dan wordt er voor die ID niets verstuurd (geen herhaling van oude data).
+
+> Voorbeeld: sensor stuurt op t=0,6 / 1,2 / 1,8 → S3 krijgt op t=1 de waarde van t=0,6 en op t=2 de waarde van t=1,8. Records staan op een net, niet op de sensorfase.
+
+Een **tragere** per-ID- of per-groep-rate (`upload_rate_sec` / `can_upload_rates`) blijft gelden en krijgt voorrang op de 1 Hz-basis.
+
+### 2. NMEA tijd-uitgelijnd met CAN
+
+NMEA-zinnen gebruiken dezelfde sample-and-hold: per zin-type (`GNGGA`, `GNHDT`, …) wordt de laatste zin onthouden en **op dezelfde tik** als CAN gecaptured. Daardoor zijn CAN- en NMEA-records in S3 tijd-uitgelijnd. Live-status en NTRIP verwerken nog wél elke binnenkomende zin.
+
+### 3. Busmanagement-frames worden uitgesloten
+
+Commando's op de CAN-bus zijn geen sensordata en gaan **niet** naar S3:
+
+- **NMT-broadcasts** (`0x000`) — o.a. de sensor-activatie, pre-operational, reset
+- **SDO-requests** (`0x600`–`0x67F`) — node-ID- en baudrate-wijzigingen
+
+Deze blijven wel zichtbaar in de live CAN-log voor diagnose.
+
+### 4. Batching naar S3
+
+- Records worden gebufferd en geflusht bij `s3_batch_size` records óf na `s3_flush_interval_sec` seconden (apart instelbaar voor CAN en NMEA).
+- Bij geen netwerk worden batches op schijf gequeued (`/data/vgapp/s3_queue`) en later geüpload.
+
+### Sensor-activatie (NMT Start)
+
+Völkel CANopen-sensoren sturen pas data in de **Operational** state. `app.py` stuurt daarom NMT Start (`000#0100`):
+
+- **Eenmalig** bij bus-bring-up (sensoren actief bij aanschakelen).
+- **Periodiek** elke `nmt_autostart_interval_sec` (default 30s) — aan/uit via de toggle `nmt_autostart_enabled` in de webinterface. Deze wordt **live** uit `config.json` gelezen, dus werkt zonder container-herstart.
+- **Handmatig** via de knop "Sensoren activeren" in de webinterface.
+
+---
+
 ## Webinterface
 
 Bereikbaar op `http://<VG710-IP>:8080`
@@ -58,6 +103,7 @@ Bereikbaar op `http://<VG710-IP>:8080`
 - **Systeemstatus** — CPU-gebruik, geheugen, load average
 - **CAN interface beheer** — baudrate wijzigen, interface aan/uitzetten en status opvragen vanuit de browser
 - **CAN sensor groepen** — groepen op ID-bereik met naam (bijv. Temperatuursensor) en upload rate; groepnaam zichtbaar bij detected IDs
+- **Völkel sensoren** — detecteren, node-ID en baudrate wijzigen (CANopen SDO), handmatig **Sensoren activeren** (NMT Start) en toggle voor periodieke auto-activatie
 - **CAN berichten** — live scrollend venster met alle inkomende frames
 - **NTRIP instellingen** — proxy-server config + upstream caster met mountpoint-ophaler
 - **S3 upload instellingen** — flush-interval en batchgrootte per datatype
@@ -79,6 +125,8 @@ Bereikbaar op `http://<VG710-IP>:8080`
   "mqtt_topic_prefix": "vg710",
   "heartbeat_interval_sec": 10,
   "can_channel": "can0",
+  "nmt_autostart_enabled": true,
+  "nmt_autostart_interval_sec": 30,
   "can_sensor_groups": [
     {
       "name": "Temperatuursensor",
@@ -98,6 +146,8 @@ Bereikbaar op `http://<VG710-IP>:8080`
   "s3_region": "eu-north-1",
   "s3_flush_interval_sec": 30,
   "s3_batch_size": 100,
+  "s3_can_min_interval_sec": 1.0,
+  "s3_nmea_min_interval_sec": 1.0,
   "ntrip": {
     "enabled": true,
     "host": "ntrip.example.com",
