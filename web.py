@@ -1,6 +1,7 @@
 import base64
 import functools
 import json
+import math
 import os
 import socket
 import subprocess
@@ -2781,32 +2782,54 @@ DUAL_HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>Kalibratie wals (bovenaanzicht)</h2>
-  <p class="muted" style="margin-bottom:12px;">Ga met de S599 op een punt staan en klik dat punt in het schema (of "Meet" in de tabel). De huidige positie wordt eraan gekoppeld. Septentrio legt positie + heading vast.</p>
+  <p class="muted" style="margin-bottom:12px;">Ga met de S599 op een lijnlast-uiteinde staan en klik dat punt in het schema (of "Meet" in de tabel). De huidige S599-positie wordt eraan gekoppeld. De Septentrio-positie en -heading worden live getoond en automatisch meegeslagen bij opslaan.</p>
   <div class="calibwrap">
-    <svg id="roller-svg" viewBox="0 0 300 380" width="280" style="max-width:100%;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;">
-      <defs>
-        <marker id="ah" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto">
-          <path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/>
-        </marker>
-      </defs>
-      <text x="150" y="14" text-anchor="middle" font-size="10" fill="#6b7280">▲ rijrichting</text>
-      <rect x="45" y="35" width="210" height="34" rx="6" fill="#facc15" stroke="#a16207"/>
-      <rect x="80" y="78" width="140" height="224" rx="10" fill="#fde68a" stroke="#a16207"/>
-      <rect x="135" y="180" width="30" height="20" fill="#a16207"/>
-      <rect x="45" y="311" width="210" height="34" rx="6" fill="#facc15" stroke="#a16207"/>
-      <text x="52" y="28" text-anchor="middle" font-size="11" font-weight="700">LV</text>
-      <text x="248" y="28" text-anchor="middle" font-size="11" font-weight="700">RV</text>
-      <text x="52" y="372" text-anchor="middle" font-size="11" font-weight="700">LA</text>
-      <text x="248" y="372" text-anchor="middle" font-size="11" font-weight="700">RA</text>
-      <line id="hdg-arrow" x1="150" y1="155" x2="150" y2="110" stroke="#2563eb" stroke-width="3" marker-end="url(#ah)"/>
-      <circle id="pt-LV" class="cpt" cx="52" cy="52" r="9" onclick="capturePoint('LV')"></circle>
-      <circle id="pt-RV" class="cpt" cx="248" cy="52" r="9" onclick="capturePoint('RV')"></circle>
-      <circle id="pt-LA" class="cpt" cx="52" cy="328" r="9" onclick="capturePoint('LA')"></circle>
-      <circle id="pt-RA" class="cpt" cx="248" cy="328" r="9" onclick="capturePoint('RA')"></circle>
-      <circle id="pt-SEPT" class="cpt sept" cx="150" cy="155" r="9" onclick="capturePoint('SEPT')"></circle>
-      <text x="168" y="159" font-size="11" font-weight="700" fill="#2563eb">Sept</text>
-    </svg>
+    <div style="text-align:center;">
+      <svg id="roller-svg" viewBox="0 0 300 380" width="240" style="max-width:100%;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;">
+        <defs>
+          <marker id="ah" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto">
+            <path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/>
+          </marker>
+        </defs>
+        <text x="150" y="14" text-anchor="middle" font-size="10" fill="#6b7280">▲ rijrichting</text>
+        <rect x="45" y="35" width="210" height="34" rx="6" fill="#facc15" stroke="#a16207"/>
+        <rect x="80" y="78" width="140" height="224" rx="10" fill="#fde68a" stroke="#a16207"/>
+        <rect x="135" y="180" width="30" height="20" fill="#a16207"/>
+        <rect x="45" y="311" width="210" height="34" rx="6" fill="#facc15" stroke="#a16207"/>
+        <text x="52" y="28" text-anchor="middle" font-size="11" font-weight="700">LV</text>
+        <text x="248" y="28" text-anchor="middle" font-size="11" font-weight="700">RV</text>
+        <text x="52" y="372" text-anchor="middle" font-size="11" font-weight="700">LA</text>
+        <text x="248" y="372" text-anchor="middle" font-size="11" font-weight="700">RA</text>
+        <line id="hdg-arrow" x1="150" y1="155" x2="150" y2="110" stroke="#2563eb" stroke-width="3" marker-end="url(#ah)"/>
+        <circle id="pt-LV" class="cpt" cx="52" cy="52" r="9" onclick="capturePoint('LV')"></circle>
+        <circle id="pt-RV" class="cpt" cx="248" cy="52" r="9" onclick="capturePoint('RV')"></circle>
+        <circle id="pt-LA" class="cpt" cx="52" cy="328" r="9" onclick="capturePoint('LA')"></circle>
+        <circle id="pt-RA" class="cpt" cx="248" cy="328" r="9" onclick="capturePoint('RA')"></circle>
+        <circle id="pt-SEPT" class="cpt sept" cx="150" cy="155" r="9"></circle>
+        <text x="168" y="159" font-size="11" font-weight="700" fill="#2563eb">Sept</text>
+      </svg>
+      <div style="margin-top:10px;">
+        <svg id="compass" viewBox="0 0 120 120" width="120">
+          <circle cx="60" cy="60" r="54" fill="#fff" stroke="#cbd5e1" stroke-width="2"/>
+          <text x="60" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#991b1b">N</text>
+          <text x="60" y="112" text-anchor="middle" font-size="11" fill="#6b7280">Z</text>
+          <text x="13" y="65" text-anchor="middle" font-size="11" fill="#6b7280">W</text>
+          <text x="107" y="65" text-anchor="middle" font-size="11" fill="#6b7280">O</text>
+          <g id="compass-needle">
+            <polygon points="60,18 53,60 67,60" fill="#dc2626"></polygon>
+            <polygon points="60,102 53,60 67,60" fill="#9ca3af"></polygon>
+          </g>
+          <circle cx="60" cy="60" r="4" fill="#374151"></circle>
+        </svg>
+        <p class="kv" style="margin-top:4px;">Heading: <strong id="hdg-live">-</strong></p>
+      </div>
+    </div>
     <div style="flex:1;min-width:300px;">
+      <div class="kv" style="margin-bottom:10px;padding:8px 10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;">
+        <strong style="color:#1e40af;">Septentrio (referentie, live)</strong><br>
+        Lat: <span id="sept-lat">-</span> &nbsp;·&nbsp; Lon: <span id="sept-lon">-</span><br>
+        Hoogte: <span id="sept-alt">-</span> m &nbsp;·&nbsp; Heading: <strong id="sept-hdg">-</strong>
+      </div>
       <table>
         <thead><tr><th>Punt</th><th>Status</th><th>Lat</th><th>Lon</th><th>Hoogte</th><th></th><th></th></tr></thead>
         <tbody id="calib-rows"></tbody>
@@ -2840,9 +2863,9 @@ DUAL_HTML = """<!DOCTYPE html>
 (function(){
   var cfgTouched = false;
   var lastStatus = {};
-  var CALIB_POINTS = ['LV','RV','LA','RA','SEPT'];
-  var CALIB_LABELS = {LV:'Links-voor',RV:'Rechts-voor',LA:'Links-achter',RA:'Rechts-achter',SEPT:'Septentrio'};
-  var calib = {LV:null,RV:null,LA:null,RA:null,SEPT:null};
+  var CALIB_POINTS = ['LV','RV','LA','RA'];
+  var CALIB_LABELS = {LV:'Links-voor',RV:'Rechts-voor',LA:'Links-achter',RA:'Rechts-achter'};
+  var calib = {LV:null,RV:null,LA:null,RA:null};
   function $(id){ return document.getElementById(id); }
   function fmt(v, d){ return (v === null || v === undefined) ? '-' : Number(v).toFixed(d); }
   function pill(el, ok, text){ el.className = 'pill ' + (ok ? 'ok' : 'bad'); el.textContent = text; }
@@ -2863,6 +2886,20 @@ DUAL_HTML = """<!DOCTYPE html>
       $('a-lon').textContent = fmt(a.lon, 8);
       $('a-alt').textContent = fmt(a.altitude, 3);
       $('a-geoid').textContent = fmt(a.geoid_sep, 3);
+
+      // Septentrio live referentie + kompas/heading-pijl
+      $('sept-lat').textContent = fmt(a.lat, 8);
+      $('sept-lon').textContent = fmt(a.lon, 8);
+      $('sept-alt').textContent = fmt(a.altitude, 3);
+      var hdg = (a.heading === undefined ? null : a.heading);
+      var hdgTxt = (hdg === null) ? '-' : fmt(hdg, 1) + '\\u00b0';
+      $('sept-hdg').textContent = hdgTxt;
+      $('hdg-live').textContent = hdgTxt;
+      var needle = $('compass-needle');
+      if(needle){ if(hdg !== null){ needle.setAttribute('transform','rotate(' + hdg + ',60,60)'); } else { needle.removeAttribute('transform'); } }
+      var rArrow = $('hdg-arrow');
+      if(rArrow){ if(hdg !== null){ rArrow.setAttribute('transform','rotate(' + hdg + ',150,155)'); } else { rArrow.removeAttribute('transform'); } }
+
       pill($('b-fix'), (b.fix_quality || 0) > 0, b.fix_label || '-');
       $('b-lat').textContent = fmt(b.lat, 8);
       $('b-lon').textContent = fmt(b.lon, 8);
@@ -2934,17 +2971,13 @@ DUAL_HTML = """<!DOCTYPE html>
 
   window.capturePoint = function(key){
     var s = lastStatus || {};
-    var pt;
-    if(key === 'SEPT'){
-      var a = s.a || {};
-      if(!a.lat || (a.fix_quality || 0) === 0){ $('calib-msg').textContent = 'Septentrio heeft geen fix.'; return; }
-      pt = {lat:a.lat, lon:a.lon, alt:a.altitude, heading:(a.heading===undefined?null:a.heading), src:'Septentrio', ts:s.ts};
-    } else {
-      var b = s.b || {};
-      if(!b.connected || !b.lat || (b.fix_quality || 0) === 0){ $('calib-msg').textContent = 'S599 niet verbonden of geen fix.'; return; }
-      pt = {lat:b.lat, lon:b.lon, alt:(b.altitude_ortho===undefined?b.altitude:b.altitude_ortho), heading:null, src:'S599', ts:s.ts};
-    }
-    calib[key] = pt;
+    var b = s.b || {};
+    if(!b.connected || !b.lat || (b.fix_quality || 0) === 0){ $('calib-msg').textContent = 'S599 niet verbonden of geen fix.'; return; }
+    calib[key] = {
+      lat:b.lat, lon:b.lon,
+      alt:(b.altitude_ortho===undefined||b.altitude_ortho===null?b.altitude:b.altitude_ortho),
+      src:'S599', ts:s.ts
+    };
     $('calib-msg').textContent = CALIB_LABELS[key] + ' ingemeten.';
     setTimeout(function(){ $('calib-msg').textContent=''; }, 2000);
     renderCalib();
@@ -2962,11 +2995,9 @@ DUAL_HTML = """<!DOCTYPE html>
     for(var i=0;i<CALIB_POINTS.length;i++){
       var k = CALIB_POINTS[i], p = calib[k];
       var marker = $('pt-' + k);
-      if(marker){ marker.setAttribute('class', 'cpt' + (k==='SEPT'?' sept':'') + (p?' done':'')); }
-      var hcol = (k==='SEPT') ? (p && p.heading!==null ? fmt(p.heading,2)+'\\u00b0' : '-') : '';
+      if(marker){ marker.setAttribute('class', 'cpt' + (p?' done':'')); }
       html += '<tr>' +
-        '<td><strong>' + k + '</strong> <span class="muted">' + CALIB_LABELS[k] + '</span>' +
-          (k==='SEPT' ? '<br><span class="muted">heading: ' + hcol + '</span>' : '') + '</td>' +
+        '<td><strong>' + k + '</strong> <span class="muted">' + CALIB_LABELS[k] + '</span></td>' +
         '<td>' + (p ? '<span class="pill ok">ingemeten</span>' : '<span class="pill bad">-</span>') + '</td>' +
         '<td>' + (p ? fmt(p.lat,8) : '-') + '</td>' +
         '<td>' + (p ? fmt(p.lon,8) : '-') + '</td>' +
@@ -2976,15 +3007,6 @@ DUAL_HTML = """<!DOCTYPE html>
         '</tr>';
     }
     $('calib-rows').innerHTML = html;
-    // heading-pijl draaien op de ingemeten Septentrio-heading (0 = noord = omhoog)
-    var sp = calib.SEPT, arrow = $('hdg-arrow');
-    if(arrow){
-      if(sp && sp.heading !== null && sp.heading !== undefined){
-        arrow.setAttribute('transform', 'rotate(' + sp.heading + ',150,155)');
-      } else {
-        arrow.removeAttribute('transform');
-      }
-    }
   }
 
   window.saveCalibration = function(){
@@ -3100,10 +3122,39 @@ def _s3_client(region):
     return boto3.client("s3", **kwargs)
 
 
+def _delta_to_ref(ref, pt, heading):
+    """Lokale offset van pt t.o.v. ref (Septentrio) in meters: geografisch
+    (d_north/d_east/d_up) en in walsframe (forward/right) o.b.v. de heading."""
+    try:
+        lat_r, lon_r, alt_r = ref["lat"], ref["lon"], ref.get("alt")
+        lat_p, lon_p, alt_p = pt["lat"], pt["lon"], pt.get("alt")
+        if None in (lat_r, lon_r, lat_p, lon_p):
+            return None
+        R = 6378137.0
+        lat_mid = math.radians((lat_r + lat_p) / 2.0)
+        d_north = math.radians(lat_p - lat_r) * R
+        d_east = math.radians(lon_p - lon_r) * R * math.cos(lat_mid)
+        d_up = (alt_p - alt_r) if (alt_r is not None and alt_p is not None) else None
+        out = {
+            "d_north": round(d_north, 4),
+            "d_east": round(d_east, 4),
+            "d_up": round(d_up, 4) if d_up is not None else None,
+        }
+        if heading is not None:
+            h = math.radians(heading)
+            out["forward"] = round(d_north * math.cos(h) + d_east * math.sin(h), 4)
+            out["right"] = round(-d_north * math.sin(h) + d_east * math.cos(h), 4)
+        return out
+    except Exception:
+        return None
+
+
 @dual_app.route("/dual_calibration_save", methods=["POST"])
 def dual_calibration_save():
-    """Schrijf de kalibratiedataset (walspunten + Septentrio/heading) naar S3
-    onder {prefix}/{device_id}/calibration/{ts}.json."""
+    """Schrijf de kalibratiedataset naar S3 onder
+    {prefix}/{device_id}/calibration/{ts}.json. Bevat de live Septentrio-positie
+    en -heading, de ingemeten S599-punten en de delta's per punt t.o.v. de
+    Septentrio (geografisch + walsframe) voor verdere berekeningen."""
     try:
         payload = request.get_json(force=True) or {}
     except Exception:
@@ -3116,13 +3167,30 @@ def dual_calibration_save():
     if not bucket:
         return {"ok": False, "error": "Geen S3-bucket geconfigureerd (s3.json)."}, 400
 
+    # Live Septentrio-positie + heading uit de status (automatisch meeslaan).
+    status = _read_json_file(DUAL_GNSS_STATUS_FILE, {})
+    a = status.get("a", {}) if isinstance(status, dict) else {}
+    septentrio = {
+        "lat": a.get("lat"), "lon": a.get("lon"),
+        "alt": a.get("altitude"), "geoid_sep": a.get("geoid_sep"),
+        "heading": a.get("heading"), "fix_label": a.get("fix_label"),
+    }
+    heading = a.get("heading")
+
+    # Delta per ingemeten punt t.o.v. de Septentrio-referentie.
+    for key_pt, pt in points.items():
+        if isinstance(pt, dict) and pt.get("lat") is not None:
+            pt["delta"] = _delta_to_ref(septentrio, pt, heading)
+
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     record = {
         "device_id": device_id,
         "asset_id": cfg.get("asset_id"),
         "roller": payload.get("roller"),
         "ts": ts,
+        "septentrio": septentrio,
         "points": points,
+        "ab_diff": status.get("diff") if isinstance(status, dict) else None,
     }
     key = f"{prefix}/{device_id}/calibration/{ts.replace(':', '-')}.json"
     body = json.dumps(record, indent=2, ensure_ascii=False).encode("utf-8")

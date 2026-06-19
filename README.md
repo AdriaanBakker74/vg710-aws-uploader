@@ -108,15 +108,15 @@ Wanneer geschreven:
 Op de dual-GNSS-pagina (poort 599) staat een schematisch bovenaanzicht van een tandemwals. Per relevant punt wordt de live GNSS-positie ingemeten:
 
 - **LV / RV / LA / RA** — uiteinden van de lijnlast van de voor- en achterrol, ingemeten met de **S599** (orthometrische, gecorrigeerde hoogte).
-- **Septentrio** — referentiepunt + **heading** (HDT, vereist dual-antenne).
+- **Septentrio** — referentiepunt; positie en **heading** (HDT, vereist dual-antenne) worden **live** getoond (kompas) en automatisch meegeslagen.
 
-Klik een punt in het schema (of "Meet" in de tabel) terwijl je er fysiek staat → de huidige positie wordt eraan gekoppeld. Met **"Opslaan kalibratie naar S3"** wordt de dataset weggeschreven naar:
+Klik een lijnlast-punt in het schema (of "Meet" in de tabel) terwijl je er fysiek staat → de huidige S599-positie wordt eraan gekoppeld. Met **"Opslaan kalibratie naar S3"** wordt de dataset weggeschreven naar:
 
 ```
 {S3_PREFIX}/{device_id}/calibration/{ts}.json
 ```
 
-(en lokaal bewaard als `calibration_last.json`).
+De dataset bevat de live **Septentrio-positie + heading**, de ingemeten **punten** en per punt de **delta's** t.o.v. de Septentrio — geografisch (d_north/d_east/d_up) én in walsframe (forward/right) — plus de live A-B-`ab_diff`. Ook lokaal bewaard als `calibration_last.json`.
 
 ### Sensor-activatie (NMT Start)
 
