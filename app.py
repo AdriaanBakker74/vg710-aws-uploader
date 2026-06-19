@@ -514,6 +514,32 @@ def upload_batch_to_s3(key, batch):
     )
 
 
+def write_device_startup_record():
+    """Schrijf bij elke opstart een apparaatregel naar een vaste S3-key
+    (devices/{device_id}.njson). De vorige opstartregel wordt overschreven,
+    zodat de bucket een actuele device-registry bevat."""
+    if not S3_CLIENT or not S3_BUCKET:
+        return
+    key = f"{S3_PREFIX}/devices/{DEVICE_ID}.njson"
+    record = {
+        "device_id": DEVICE_ID,
+        "asset_id": cfg.get("asset_id"),
+        "app_version": os.environ.get("APP_VERSION", "onbekend"),
+        "ts": now(),
+    }
+    body = json.dumps(record, separators=(",", ":")) + "\n"
+    try:
+        S3_CLIENT.put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=body.encode("utf-8"),
+            ContentType="application/x-ndjson",
+        )
+        print(f"Wrote device startup record to s3://{S3_BUCKET}/{key}", flush=True)
+    except Exception as e:
+        print(f"Device startup record failed: {e}", flush=True)
+
+
 def enforce_queue_limit():
     """Verwijder de oudste wachtrijbestanden totdat het totaal onder S3_QUEUE_MAX_BYTES valt."""
     entries = []
@@ -1382,6 +1408,10 @@ def nmea_reader_loop(source):
 
 
 ensure_queue_dirs()
+
+# Apparaatregel bij opstart naar S3 (overschrijft de vorige). In een thread
+# zodat een trage/ontbrekende netwerkverbinding de opstart niet blokkeert.
+threading.Thread(target=write_device_startup_record, daemon=True).start()
 
 threading.Thread(target=heartbeat, daemon=True).start()
 threading.Thread(target=can_reader_loop, daemon=True).start()
