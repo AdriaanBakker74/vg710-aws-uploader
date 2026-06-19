@@ -768,22 +768,18 @@ def can_reader_loop():
             bus = can.interface.Bus(channel=CAN_CHANNEL, interface="socketcan")
             print("CAN opened", flush=True)
 
+            # Eenmalige NMT Start bij bus-bring-up zodat sensoren bij aanschakelen
+            # direct data sturen. Geen periodieke herhaling meer: dat vervuilde de
+            # bus. Handmatig opnieuw activeren kan via de webinterface-knop
+            # "Sensoren activeren" (/volkel_activate).
             try:
                 bus.send(nmt_start)
                 print("Sent NMT Start broadcast", flush=True)
             except Exception as e:
                 print(f"NMT broadcast failed: {e}", flush=True)
-            last_nmt = time.time()
 
             while True:
                 msg = bus.recv(timeout=1.0)
-
-                if time.time() - last_nmt > 30:
-                    try:
-                        bus.send(nmt_start)
-                    except Exception as e:
-                        print(f"Periodic NMT failed: {e}", flush=True)
-                    last_nmt = time.time()
 
                 if msg is None:
                     continue

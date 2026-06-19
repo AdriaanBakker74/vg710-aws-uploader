@@ -805,7 +805,7 @@ HTML = """
             </div>
             <div style="grid-column:1 / -1;">
               <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Secret Access Key</label>
-              <input type="password" id="aws-input-secret" placeholder="********" autocomplete="off" spellcheck="false">
+              <input type="ord" id="aws-input-secret" placeholder="********" autocomplete="off" spellcheck="false">
             </div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
@@ -875,37 +875,19 @@ HTML = """
     </section>
 
     <section class="card" style="margin-top: 20px;">
-      <h2>Völkel ASB Sensor — CAN ID configuratie</h2>
-      <p class="sub">Detecteer aangesloten ASB sensoren (CANopen) en wijzig het node ID. Sluit slechts 1 sensor aan tijdens het wijzigen.</p>
+      <h2>Völkel sensoren &mdash; configuratie</h2>
+      <p class="sub">Detecteer aangesloten Völkel CANopen-sensoren en wijzig per type het node-ID of de baudrate. Sluit voor een eerste configuratie slechts 1 nieuwe sensor (node 1) tegelijk aan.</p>
 
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
         <button type="button" onclick="volkelScan()">Detecteer sensoren</button>
+        <button type="button" onclick="volkelActivate()">Sensoren activeren</button>
         <span id="volkel-scan-status" class="muted" style="font-size:13px;"></span>
       </div>
 
-      <div id="volkel-result" style="display:none;">
-        <div id="volkel-device-info" style="margin-bottom:16px;"></div>
-
-        <div id="volkel-change-form" style="display:none;">
-          <div style="font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">Node ID wijzigen</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;max-width:480px;">
-            <div>
-              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Huidig node ID</label>
-              <input type="number" id="volkel-current-id" min="1" max="127" readonly
-                     style="background:#f7faff;cursor:default;">
-            </div>
-            <div>
-              <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px;">Nieuw node ID (1–127)</label>
-              <input type="number" id="volkel-new-id" min="1" max="127" placeholder="bijv. 5">
-            </div>
-            <button type="button" onclick="volkelChangeId()">Wijzig node ID</button>
-          </div>
-          <p class="muted" style="margin-top:8px;font-size:12px;">
-            De sensor wordt automatisch herstart. Nieuwe CAN IDs zijn actief na ~2 seconden.<br>
-            TPDO1: <code>0x180 + node_id</code> &nbsp;·&nbsp; Heartbeat: <code>0x700 + node_id</code>
-          </p>
-        </div>
+      <div id="volkel-unassigned" style="display:none;margin-bottom:16px;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;font-size:13px;">
       </div>
+
+      <div id="volkel-types" style="display:grid;gap:14px;"></div>
 
       <pre id="volkel-output" style="display:none;min-height:40px;margin-top:12px;font-size:12px;"></pre>
     </section>
@@ -1428,71 +1410,159 @@ HTML = """
       }
     }
 
+    var BAUDRATES_KBIT = [10, 20, 50, 100, 250, 500];
+
+    function _renderNodeOptions(nodes, includeNew) {
+      var opts = '';
+      if (includeNew) opts += '<option value="1">1 (nieuw / fabriek)</option>';
+      for (var i = 0; i < nodes.length; i++) {
+        opts += '<option value="' + nodes[i] + '">' + nodes[i] + '</option>';
+      }
+      return opts;
+    }
+
+    function _renderBaudrateOptions() {
+      var opts = '';
+      for (var i = 0; i < BAUDRATES_KBIT.length; i++) {
+        var b = BAUDRATES_KBIT[i];
+        var sel = (b === 250) ? ' selected' : '';
+        opts += '<option value="' + b + '"' + sel + '>' + b + ' kBit/s</option>';
+      }
+      return opts;
+    }
+
+    function _renderTypeCard(typeKey, typeCfg, foundNodes, unassigned) {
+      var newIdOpts = '';
+      for (var i = typeCfg.node_min; i <= typeCfg.node_max; i++) {
+        newIdOpts += '<option value="' + i + '">' + i + '</option>';
+      }
+      var nodesForId = unassigned.concat(foundNodes);
+      var nodesForBaud = foundNodes.slice();
+      if (unassigned.indexOf(1) === -1) nodesForBaud = nodesForBaud.concat(unassigned);
+      else nodesForBaud = nodesForBaud.concat(unassigned);
+      var statusBadge = foundNodes.length
+        ? '<span class="pill ok">' + foundNodes.length + ' gevonden (' + foundNodes.join(', ') + ')</span>'
+        : '<span class="pill bad">geen in dit type-bereik</span>';
+
+      return (
+        '<div class="card" style="padding:14px;background:var(--bg2);">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">' +
+            '<div>' +
+              '<strong>' + typeCfg.label + '</strong>' +
+              '<div class="muted" style="font-size:12px;">Bereik node-ID: ' + typeCfg.node_min + '-' + typeCfg.node_max + '</div>' +
+            '</div>' +
+            statusBadge +
+          '</div>' +
+
+          '<div style="display:grid;grid-template-columns:auto 1fr auto 1fr auto;gap:8px;align-items:end;margin-bottom:10px;">' +
+            '<label style="font-size:12px;font-weight:600;">Huidig node-ID</label>' +
+            '<select id="vk-nid-cur-' + typeKey + '">' + _renderNodeOptions(nodesForId, true) + '</select>' +
+            '<label style="font-size:12px;font-weight:600;">Nieuw node-ID</label>' +
+            '<select id="vk-nid-new-' + typeKey + '">' + newIdOpts + '</select>' +
+            '<button type="button" onclick="volkelChangeId(\'' + typeKey + '\')">Wijzig node-ID</button>' +
+          '</div>' +
+
+          '<div style="display:grid;grid-template-columns:auto 1fr auto 1fr auto;gap:8px;align-items:end;">' +
+            '<label style="font-size:12px;font-weight:600;">Node</label>' +
+            '<select id="vk-baud-node-' + typeKey + '">' + _renderNodeOptions(nodesForBaud, true) + '</select>' +
+            '<label style="font-size:12px;font-weight:600;">Nieuwe baudrate</label>' +
+            '<select id="vk-baud-val-' + typeKey + '">' + _renderBaudrateOptions() + '</select>' +
+            '<button type="button" onclick="volkelChangeBaudrate(\'' + typeKey + '\')">Wijzig baudrate</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
     async function volkelScan() {
       const statusEl = document.getElementById('volkel-scan-status');
-      const resultEl = document.getElementById('volkel-result');
-      const infoEl = document.getElementById('volkel-device-info');
-      const formEl = document.getElementById('volkel-change-form');
+      const typesEl = document.getElementById('volkel-types');
+      const unassignedEl = document.getElementById('volkel-unassigned');
       const outEl = document.getElementById('volkel-output');
-      statusEl.textContent = 'Scannen\u2026';
+      statusEl.textContent = 'Scannen...';
       outEl.style.display = 'none';
       try {
         const resp = await fetch('/volkel_scan', { cache: 'no-store' });
         const data = await resp.json();
-        resultEl.style.display = 'block';
-        statusEl.textContent = '';
-        if (data.count === 0) {
-          infoEl.innerHTML = '<span class="pill bad">Geen V\u00f6lkel ASB sensor gevonden</span>' +
-            '<p class="muted" style="margin-top:8px;font-size:13px;">Controleer of de sensor is aangesloten en berichten verstuurt (heartbeat 0x701\u20130x77F of TPDO1 0x181\u20130x1FF).</p>';
-          formEl.style.display = 'none';
-        } else if (data.count === 1) {
-          const nodeId = data.detected_nodes[0];
-          const tpdo1 = '0x' + (0x180 + nodeId).toString(16).toUpperCase();
-          const hb = '0x' + (0x700 + nodeId).toString(16).toUpperCase();
-          infoEl.innerHTML = '<span class="pill ok" style="margin-bottom:10px;">1 sensor gevonden</span>' +
-            '<div style="display:grid;grid-template-columns:auto auto auto;gap:6px 20px;font-size:13px;margin-top:10px;">' +
-            '<span style="color:var(--muted)">Detectie</span><span style="color:var(--muted)">Node ID</span><span style="color:var(--muted)">TPDO1 / Heartbeat CAN ID</span>' +
-            '<strong>' + data.detection_method + '</strong>' +
-            '<strong>' + nodeId + '</strong>' +
-            '<strong>' + tpdo1 + ' / ' + hb + '</strong></div>';
-          document.getElementById('volkel-current-id').value = nodeId;
-          formEl.style.display = 'block';
+        statusEl.textContent = data.count + ' node(s) gevonden via ' + data.detection_method;
+
+        if (data.unassigned && data.unassigned.length) {
+          unassignedEl.style.display = 'block';
+          unassignedEl.innerHTML = '<strong>Niet-toegewezen nodes:</strong> ' + data.unassigned.join(', ') +
+            ' &mdash; klassiek node-1 nieuwe sensor of buiten type-bereik. Wijs ze toe via het juiste type-blok.';
         } else {
-          const nodeList = data.detected_nodes.map(n =>
-            'Node\u00a0' + n + '\u00a0(0x' + (0x180 + n).toString(16).toUpperCase() + ')'
-          ).join(', ');
-          infoEl.innerHTML = '<span class="pill bad" style="margin-bottom:8px;">' + data.count + ' sensoren gevonden \u2014 sluit slechts 1 sensor aan</span>' +
-            '<p class="muted" style="font-size:13px;margin-top:8px;">Gevonden nodes: ' + nodeList + '</p>';
-          formEl.style.display = 'none';
+          unassignedEl.style.display = 'none';
         }
+
+        var html = '';
+        var keys = Object.keys(data.types);
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          html += _renderTypeCard(key, data.types[key], data.by_type[key] || [], data.unassigned || []);
+        }
+        typesEl.innerHTML = html;
       } catch(e) {
         statusEl.textContent = 'Fout: ' + e.message;
       }
     }
 
-    async function volkelChangeId() {
-      const currentId = document.getElementById('volkel-current-id').value;
-      const newId = document.getElementById('volkel-new-id').value;
+    function volkelActivate() {
+      var statusEl = document.getElementById('volkel-scan-status');
+      var outEl = document.getElementById('volkel-output');
+      statusEl.textContent = 'Sensoren activeren...';
+      fetch('/volkel_activate', { method: 'POST' })
+        .then(function (resp) { return resp.json(); })
+        .then(function (data) {
+          statusEl.textContent = data.message || 'NMT Start verstuurd.';
+          if (outEl) {
+            outEl.style.display = 'block';
+            outEl.textContent = (data.command || '') + '\\n' + (data.output || '');
+          }
+          setTimeout(volkelScan, 1500);
+        })
+        .catch(function (e) {
+          statusEl.textContent = 'Fout: ' + e.message;
+        });
+    }
+
+    async function volkelChangeId(typeKey) {
+      const curEl = document.getElementById('vk-nid-cur-' + typeKey);
+      const newEl = document.getElementById('vk-nid-new-' + typeKey);
       const outEl = document.getElementById('volkel-output');
-      const n = parseInt(newId);
-      if (!newId || isNaN(n) || n < 1 || n > 127) {
-        alert('Voer een geldig nieuw node ID in (1\u2013127)');
-        return;
-      }
-      if (!confirm('Node ID wijzigen van ' + currentId + ' naar ' + n + '?\\nDe sensor wordt herstart.')) return;
+      const cur = parseInt(curEl.value);
+      const next = parseInt(newEl.value);
+      if (!cur || !next) { alert('Selecteer huidig en nieuw node-ID'); return; }
+      if (!confirm('Node ' + cur + ' wijzigen naar ' + next + '? Sensor wordt herstart.')) return;
       outEl.style.display = 'block';
-      outEl.textContent = 'Bezig\u2026';
+      outEl.textContent = 'Bezig...';
       const body = new FormData();
-      body.append('current_node_id', currentId);
-      body.append('new_node_id', n);
+      body.append('current_node_id', cur);
+      body.append('new_node_id', next);
       try {
         const resp = await fetch('/volkel_change_id', { method: 'POST', body });
         const data = await resp.json();
-        outEl.textContent = data.message + '\\n\\n' + (data.output || '');
+        outEl.textContent = (data.message || data.error || 'OK') + '\\n\\n' + (data.output || '');
         if (data.success) setTimeout(volkelScan, 3000);
-      } catch(e) {
-        outEl.textContent = 'Fout: ' + e.message;
-      }
+      } catch(e) { outEl.textContent = 'Fout: ' + e.message; }
+    }
+
+    async function volkelChangeBaudrate(typeKey) {
+      const nodeEl = document.getElementById('vk-baud-node-' + typeKey);
+      const baudEl = document.getElementById('vk-baud-val-' + typeKey);
+      const outEl = document.getElementById('volkel-output');
+      const node = parseInt(nodeEl.value);
+      const baud = parseInt(baudEl.value);
+      if (!node || !baud) { alert('Selecteer node en baudrate'); return; }
+      if (!confirm('Baudrate van node ' + node + ' wijzigen naar ' + baud + ' kBit/s?\\nVergeet daarna niet de VG710 CAN-bus naar dezelfde snelheid te zetten.')) return;
+      outEl.style.display = 'block';
+      outEl.textContent = 'Bezig...';
+      const body = new FormData();
+      body.append('current_node_id', node);
+      body.append('new_baudrate', baud);
+      try {
+        const resp = await fetch('/volkel_change_baudrate', { method: 'POST', body });
+        const data = await resp.json();
+        outEl.textContent = (data.message || data.error || 'OK') + '\\n\\n' + (data.output || '');
+      } catch(e) { outEl.textContent = 'Fout: ' + e.message; }
     }
 
     async function fetchLatestVersion() {
@@ -2366,35 +2436,114 @@ def can_control():
     return {"output": output}
 
 
+@app.route("/volkel_activate", methods=["POST"])
+def volkel_activate():
+    """Stuur eenmalig een NMT Start-broadcast zodat alle sensoren naar
+    Operational gaan en data sturen. Vervangt de oude periodieke 30s-broadcast."""
+    channel = load_config_data().get("can_channel", "can0")
+    # NMT: COB-ID 000, data 01 (Start/Operational) 00 (node 0 = alle nodes)
+    cmd = f"cansend {channel} 000#0100"
+    output = run_shell_command(cmd)
+    return {
+        "success": True,
+        "command": cmd,
+        "output": output,
+        "message": "NMT Start verstuurd — alle sensoren geactiveerd (Operational).",
+    }
+
+
+SENSOR_TYPES = {
+    "TSD": {"label": "TSD (IR temperatuur)", "node_min": 11, "node_max": 20},
+    "ASB": {"label": "A-Sensor (ASB acceleratie)", "node_min": 21, "node_max": 30},
+    "TSE": {"label": "TSE (oppervlakte temperatuur)", "node_min": 31, "node_max": 50},
+}
+BAUDRATES_KBIT = [10, 20, 50, 100, 250, 500]
+
+
+def _classify_node(node_id):
+    for key, cfg in SENSOR_TYPES.items():
+        if cfg["node_min"] <= node_id <= cfg["node_max"]:
+            return key
+    return None
+
+
 @app.route("/volkel_scan")
 def volkel_scan():
-    """Detecteer Völkel ASB sensoren op basis van CANopen heartbeat/TPDO1 CAN IDs."""
+    """Detecteer Völkel sensoren op basis van CANopen heartbeat/TPDO1 CAN IDs."""
     can_ids = current_can_ids()
 
-    heartbeat_nodes = []
-    tpdo1_nodes = []
+    heartbeat_nodes = set()
+    tpdo1_nodes = set()
 
     for item in can_ids:
         can_id_int = item.get("id")
         if can_id_int is None:
             continue
         if 0x701 <= can_id_int <= 0x77F:
-            heartbeat_nodes.append(can_id_int - 0x700)
+            heartbeat_nodes.add(can_id_int - 0x700)
         elif 0x181 <= can_id_int <= 0x1FF:
-            tpdo1_nodes.append(can_id_int - 0x180)
+            tpdo1_nodes.add(can_id_int - 0x180)
 
-    if heartbeat_nodes:
-        nodes = sorted(set(heartbeat_nodes))
-        method = "heartbeat (0x700+node_id)"
-    else:
-        nodes = sorted(set(tpdo1_nodes))
-        method = "TPDO1 (0x180+node_id)"
+    all_nodes = sorted(heartbeat_nodes | tpdo1_nodes)
+    method = "heartbeat (0x700+node_id)" if heartbeat_nodes else "TPDO1 (0x180+node_id)"
+
+    by_type = {key: [] for key in SENSOR_TYPES}
+    unassigned = []
+    for node in all_nodes:
+        t = _classify_node(node)
+        if t:
+            by_type[t].append(node)
+        else:
+            unassigned.append(node)
 
     return {
-        "detected_nodes": nodes,
-        "count": len(nodes),
+        "detected_nodes": all_nodes,
+        "count": len(all_nodes),
         "detection_method": method,
-        "single_device": len(nodes) == 1,
+        "single_device": len(all_nodes) == 1,
+        "by_type": by_type,
+        "unassigned": unassigned,
+        "types": SENSOR_TYPES,
+    }
+
+
+@app.route("/volkel_change_baudrate", methods=["POST"])
+def volkel_change_baudrate():
+    """Wijzig de CAN-baudrate van een Völkel sensor via CANopen SDO (3000h:01h)."""
+    try:
+        current_id = int(request.form.get("current_node_id", "").strip())
+        new_baudrate = int(request.form.get("new_baudrate", "").strip())
+    except ValueError:
+        return {"success": False, "error": "Ongeldige invoer"}, 400
+
+    if not (1 <= current_id <= 127):
+        return {"success": False, "error": "Node ID moet 1-127 zijn"}, 400
+    if new_baudrate not in BAUDRATES_KBIT:
+        return {"success": False, "error": f"Baudrate moet een van {BAUDRATES_KBIT} zijn (kBit/s)"}, 400
+
+    channel = load_config_data().get("can_channel", "can0")
+    sdo_cob = 0x600 + current_id
+    lo = new_baudrate & 0xFF
+    hi = (new_baudrate >> 8) & 0xFF
+
+    pre_op_cmd = f"cansend {channel} 000#80{current_id:02X}"
+    write_cmd = f"cansend {channel} {sdo_cob:03X}#2B003001{lo:02X}{hi:02X}0000"
+    save_cmd = f"cansend {channel} {sdo_cob:03X}#2310100173617665"
+    reset_cmd = f"cansend {channel} 000#81{current_id:02X}"
+
+    outputs = []
+    for cmd in [pre_op_cmd, write_cmd, save_cmd, reset_cmd]:
+        outputs.append(run_shell_command(cmd))
+        time.sleep(0.2)
+
+    return {
+        "success": True,
+        "commands": [pre_op_cmd, write_cmd, save_cmd, reset_cmd],
+        "output": "\\n".join(outputs),
+        "message": (
+            f"Baudrate van node {current_id} gewijzigd naar {new_baudrate} kBit/s. "
+            f"Sensor herstart — pas daarna ook de VG710 CAN-bus naar dezelfde snelheid."
+        ),
     }
 
 
