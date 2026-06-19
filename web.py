@@ -2751,13 +2751,16 @@ DUAL_HTML = """<!DOCTYPE html>
       <div class="kv"><strong>A - Septentrio</strong> <span id="a-fix" class="pill bad">-</span></div>
       <div class="kv">Lat: <span id="a-lat">-</span></div>
       <div class="kv">Lon: <span id="a-lon">-</span></div>
-      <div class="kv">Hoogte: <span id="a-alt">-</span> m</div>
+      <div class="kv">Hoogte (orthom.): <span id="a-alt">-</span> m</div>
+      <div class="kv">Geoïde-sep N: <span id="a-geoid">-</span> m</div>
     </div>
     <div class="col">
       <div class="kv"><strong>B - S599</strong> <span id="b-fix" class="pill bad">-</span></div>
       <div class="kv">Lat: <span id="b-lat">-</span></div>
       <div class="kv">Lon: <span id="b-lon">-</span></div>
-      <div class="kv">Hoogte: <span id="b-alt">-</span> m</div>
+      <div class="kv">Hoogte (ruw): <span id="b-alt">-</span> m</div>
+      <div class="kv">Geoïde-sep N: <span id="b-geoid">-</span> m</div>
+      <div class="kv">Hoogte (gecorr.): <span id="b-alt-ortho">-</span> m</div>
     </div>
   </div>
   <div class="diffgrid">
@@ -2807,10 +2810,13 @@ DUAL_HTML = """<!DOCTYPE html>
       $('a-lat').textContent = fmt(a.lat, 8);
       $('a-lon').textContent = fmt(a.lon, 8);
       $('a-alt').textContent = fmt(a.altitude, 3);
+      $('a-geoid').textContent = fmt(a.geoid_sep, 3);
       pill($('b-fix'), (b.fix_quality || 0) > 0, b.fix_label || '-');
       $('b-lat').textContent = fmt(b.lat, 8);
       $('b-lon').textContent = fmt(b.lon, 8);
       $('b-alt').textContent = fmt(b.altitude, 3);
+      $('b-geoid').textContent = fmt(b.geoid_sep, 3);
+      $('b-alt-ortho').textContent = fmt(b.altitude_ortho, 3);
 
       if(diff){
         $('d-n').textContent = fmt(diff.d_north, 3);

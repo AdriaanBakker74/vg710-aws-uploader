@@ -267,7 +267,7 @@ GNSS_STATUS = {
     "fix_quality": 0, "fix_label": "Geen fix",
     "lat": None, "lon": None, "satellites": None,
     "hdop": None, "vdop": None, "pdop": None,
-    "altitude": None,
+    "altitude": None, "geoid_sep": None,
     "acc_lat": None, "acc_lon": None, "acc_alt": None,
     "ts": None,
 }
@@ -277,7 +277,8 @@ GNSS_STATUS = {
 POSITION_B_LOCK = threading.Lock()
 POSITION_B = {
     "connected": False, "fix_quality": 0, "fix_label": "Geen fix",
-    "lat": None, "lon": None, "altitude": None, "ts": None,
+    "lat": None, "lon": None, "altitude": None, "geoid_sep": None,
+    "altitude_ortho": None, "ts": None,
 }
 
 # Lokale NTRIP-clients die RTCM-correcties van de gedeelde upstream ontvangen.
@@ -393,7 +394,7 @@ def parse_gga(sentence):
         if fix_quality == 0:
             return {"fix_quality": 0, "fix_label": fix_label, "utc": utc,
                     "lat": None, "lon": None, "satellites": None,
-                    "hdop": None, "altitude": None}
+                    "hdop": None, "altitude": None, "geoid_sep": None}
         return {
             "fix_quality": fix_quality,
             "fix_label": fix_label,
@@ -402,7 +403,9 @@ def parse_gga(sentence):
             "lon": nmea_to_decimal(parts[4], parts[5]),
             "satellites": int(parts[7]) if parts[7] else None,
             "hdop": float(parts[8]) if parts[8] else None,
+            # Veld 9 = orthometrische hoogte (boven geoïde/MSL), veld 11 = geoïde-separatie N.
             "altitude": float(parts[9]) if parts[9] else None,
+            "geoid_sep": float(parts[11]) if len(parts) > 11 and parts[11] else None,
         }
     except Exception:
         return None
@@ -1139,12 +1142,35 @@ def write_dual_gnss_status():
         a = dict(GNSS_STATUS)
     with POSITION_B_LOCK:
         b = dict(POSITION_B)
-    payload = {"a": a, "b": b, "diff": None, "ts": now()}
+
+    # Hoogtereferentie gelijktrekken. Als B een eigen geoïde-separatie (veld 11)
+    # meldt, is zijn GGA-hoogte al orthometrisch. Zo niet, dan is die hoogte
+    # ellipsoïdaal; corrigeer met de geoïde-separatie van de Septentrio (A staat
+    # dicht bij B, dus N is ~gelijk): H = h − N.
+    n_b = b.get("geoid_sep")
+    n_a = a.get("geoid_sep")
+    alt_b_raw = b.get("altitude")
+    if n_b:
+        b_ortho = alt_b_raw
+        n_used, n_source = n_b, "B"
+    elif n_a is not None and alt_b_raw is not None:
+        b_ortho = alt_b_raw - n_a
+        n_used, n_source = n_a, "A"
+    else:
+        b_ortho = alt_b_raw
+        n_used, n_source = None, None
+    b["altitude_ortho"] = round(b_ortho, 4) if b_ortho is not None else None
+
+    payload = {
+        "a": a, "b": b, "diff": None,
+        "geoid_sep_used": n_used, "geoid_sep_source": n_source,
+        "ts": now(),
+    }
     try:
         if a.get("lat") is not None and b.get("lat") is not None:
             d_north, d_east, d_up = _local_offset(
                 a["lat"], a["lon"], a.get("altitude"),
-                b["lat"], b["lon"], b.get("altitude"),
+                b["lat"], b["lon"], b_ortho,
             )
             dist_2d = math.sqrt(d_north * d_north + d_east * d_east)
             dist_3d = (
@@ -1187,6 +1213,7 @@ def update_position_b(raw):
                 "lat": parsed.get("lat"),
                 "lon": parsed.get("lon"),
                 "altitude": parsed.get("altitude"),
+                "geoid_sep": parsed.get("geoid_sep"),
                 "ts": now(),
             })
         write_dual_gnss_status()
