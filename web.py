@@ -2724,6 +2724,12 @@ DUAL_HTML = """<!DOCTYPE html>
   .diffgrid .box{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center;}
   .diffgrid .lbl{font-size:11px;color:#6b7280;}
   .diffgrid .val{font-size:18px;font-weight:700;}
+  .cpt{fill:#9ca3af;stroke:#fff;stroke-width:2;cursor:pointer;}
+  .cpt:hover{fill:#6b7280;}
+  .cpt.done{fill:#16a34a;}
+  .cpt.sept{fill:#2563eb;}
+  .cpt.sept.done{fill:#16a34a;}
+  .calibwrap{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;}
 </style>
 </head>
 <body>
@@ -2774,6 +2780,47 @@ DUAL_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <h2>Kalibratie wals (bovenaanzicht)</h2>
+  <p class="muted" style="margin-bottom:12px;">Ga met de S599 op een punt staan en klik dat punt in het schema (of "Meet" in de tabel). De huidige positie wordt eraan gekoppeld. Septentrio legt positie + heading vast.</p>
+  <div class="calibwrap">
+    <svg id="roller-svg" viewBox="0 0 300 380" width="280" style="max-width:100%;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;">
+      <defs>
+        <marker id="ah" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto">
+          <path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/>
+        </marker>
+      </defs>
+      <text x="150" y="14" text-anchor="middle" font-size="10" fill="#6b7280">▲ rijrichting</text>
+      <rect x="45" y="35" width="210" height="34" rx="6" fill="#facc15" stroke="#a16207"/>
+      <rect x="80" y="78" width="140" height="224" rx="10" fill="#fde68a" stroke="#a16207"/>
+      <rect x="135" y="180" width="30" height="20" fill="#a16207"/>
+      <rect x="45" y="311" width="210" height="34" rx="6" fill="#facc15" stroke="#a16207"/>
+      <text x="52" y="28" text-anchor="middle" font-size="11" font-weight="700">LV</text>
+      <text x="248" y="28" text-anchor="middle" font-size="11" font-weight="700">RV</text>
+      <text x="52" y="372" text-anchor="middle" font-size="11" font-weight="700">LA</text>
+      <text x="248" y="372" text-anchor="middle" font-size="11" font-weight="700">RA</text>
+      <line id="hdg-arrow" x1="150" y1="155" x2="150" y2="110" stroke="#2563eb" stroke-width="3" marker-end="url(#ah)"/>
+      <circle id="pt-LV" class="cpt" cx="52" cy="52" r="9" onclick="capturePoint('LV')"></circle>
+      <circle id="pt-RV" class="cpt" cx="248" cy="52" r="9" onclick="capturePoint('RV')"></circle>
+      <circle id="pt-LA" class="cpt" cx="52" cy="328" r="9" onclick="capturePoint('LA')"></circle>
+      <circle id="pt-RA" class="cpt" cx="248" cy="328" r="9" onclick="capturePoint('RA')"></circle>
+      <circle id="pt-SEPT" class="cpt sept" cx="150" cy="155" r="9" onclick="capturePoint('SEPT')"></circle>
+      <text x="168" y="159" font-size="11" font-weight="700" fill="#2563eb">Sept</text>
+    </svg>
+    <div style="flex:1;min-width:300px;">
+      <table>
+        <thead><tr><th>Punt</th><th>Status</th><th>Lat</th><th>Lon</th><th>Hoogte</th><th></th><th></th></tr></thead>
+        <tbody id="calib-rows"></tbody>
+      </table>
+      <div class="row" style="margin-top:14px;">
+        <div><button onclick="saveCalibration()">Opslaan kalibratie naar S3</button></div>
+        <div><button class="danger" style="padding:9px 14px;font-size:14px;" onclick="clearCalibration()">Alles wissen</button></div>
+        <div id="calib-msg" class="muted"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <h2>Metingen</h2>
   <div class="row">
     <div>
@@ -2792,6 +2839,10 @@ DUAL_HTML = """<!DOCTYPE html>
 <script>
 (function(){
   var cfgTouched = false;
+  var lastStatus = {};
+  var CALIB_POINTS = ['LV','RV','LA','RA','SEPT'];
+  var CALIB_LABELS = {LV:'Links-voor',RV:'Rechts-voor',LA:'Links-achter',RA:'Rechts-achter',SEPT:'Septentrio'};
+  var calib = {LV:null,RV:null,LA:null,RA:null,SEPT:null};
   function $(id){ return document.getElementById(id); }
   function fmt(v, d){ return (v === null || v === undefined) ? '-' : Number(v).toFixed(d); }
   function pill(el, ok, text){ el.className = 'pill ' + (ok ? 'ok' : 'bad'); el.textContent = text; }
@@ -2803,6 +2854,7 @@ DUAL_HTML = """<!DOCTYPE html>
       if(document.activeElement !== $('cfg-ip')){ $('cfg-ip').value = cfg.wifi_ip || ''; }
 
       var s = d.status || {};
+      lastStatus = s;
       var a = s.a || {}, b = s.b || {}, diff = s.diff;
 
       pill($('conn-pill'), !!b.connected, b.connected ? 'verbonden' : 'niet verbonden');
@@ -2880,9 +2932,80 @@ DUAL_HTML = """<!DOCTYPE html>
     }).catch(function(){});
   }
 
+  window.capturePoint = function(key){
+    var s = lastStatus || {};
+    var pt;
+    if(key === 'SEPT'){
+      var a = s.a || {};
+      if(!a.lat || (a.fix_quality || 0) === 0){ $('calib-msg').textContent = 'Septentrio heeft geen fix.'; return; }
+      pt = {lat:a.lat, lon:a.lon, alt:a.altitude, heading:(a.heading===undefined?null:a.heading), src:'Septentrio', ts:s.ts};
+    } else {
+      var b = s.b || {};
+      if(!b.connected || !b.lat || (b.fix_quality || 0) === 0){ $('calib-msg').textContent = 'S599 niet verbonden of geen fix.'; return; }
+      pt = {lat:b.lat, lon:b.lon, alt:(b.altitude_ortho===undefined?b.altitude:b.altitude_ortho), heading:null, src:'S599', ts:s.ts};
+    }
+    calib[key] = pt;
+    $('calib-msg').textContent = CALIB_LABELS[key] + ' ingemeten.';
+    setTimeout(function(){ $('calib-msg').textContent=''; }, 2000);
+    renderCalib();
+  };
+
+  window.clearPoint = function(key){ calib[key] = null; renderCalib(); };
+
+  window.clearCalibration = function(){
+    for(var i=0;i<CALIB_POINTS.length;i++){ calib[CALIB_POINTS[i]] = null; }
+    renderCalib();
+  };
+
+  function renderCalib(){
+    var html = '';
+    for(var i=0;i<CALIB_POINTS.length;i++){
+      var k = CALIB_POINTS[i], p = calib[k];
+      var marker = $('pt-' + k);
+      if(marker){ marker.setAttribute('class', 'cpt' + (k==='SEPT'?' sept':'') + (p?' done':'')); }
+      var hcol = (k==='SEPT') ? (p && p.heading!==null ? fmt(p.heading,2)+'\\u00b0' : '-') : '';
+      html += '<tr>' +
+        '<td><strong>' + k + '</strong> <span class="muted">' + CALIB_LABELS[k] + '</span>' +
+          (k==='SEPT' ? '<br><span class="muted">heading: ' + hcol + '</span>' : '') + '</td>' +
+        '<td>' + (p ? '<span class="pill ok">ingemeten</span>' : '<span class="pill bad">-</span>') + '</td>' +
+        '<td>' + (p ? fmt(p.lat,8) : '-') + '</td>' +
+        '<td>' + (p ? fmt(p.lon,8) : '-') + '</td>' +
+        '<td>' + (p ? fmt(p.alt,3) + ' m' : '-') + '</td>' +
+        '<td><button onclick="capturePoint(\\'' + k + '\\')">Meet</button></td>' +
+        '<td><button class="danger" onclick="clearPoint(\\'' + k + '\\')">x</button></td>' +
+        '</tr>';
+    }
+    $('calib-rows').innerHTML = html;
+    // heading-pijl draaien op de ingemeten Septentrio-heading (0 = noord = omhoog)
+    var sp = calib.SEPT, arrow = $('hdg-arrow');
+    if(arrow){
+      if(sp && sp.heading !== null && sp.heading !== undefined){
+        arrow.setAttribute('transform', 'rotate(' + sp.heading + ',150,155)');
+      } else {
+        arrow.removeAttribute('transform');
+      }
+    }
+  }
+
+  window.saveCalibration = function(){
+    var done = 0;
+    for(var i=0;i<CALIB_POINTS.length;i++){ if(calib[CALIB_POINTS[i]]) done++; }
+    if(done === 0){ $('calib-msg').textContent = 'Nog geen punten ingemeten.'; return; }
+    $('calib-msg').textContent = 'Opslaan naar S3...';
+    fetch('/dual_calibration_save', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({roller:'tandem', points: calib})
+    }).then(function(r){ return r.json(); }).then(function(res){
+      if(res.ok){ $('calib-msg').textContent = 'Opgeslagen: ' + res.key; }
+      else { $('calib-msg').textContent = 'Fout: ' + (res.error || 'onbekend'); }
+    }).catch(function(e){ $('calib-msg').textContent = 'Fout: ' + e.message; });
+  };
+
   $('cfg-enabled').addEventListener('change', function(){ cfgTouched = true; });
   pollStatus();
   loadMeasurements();
+  renderCalib();
   setInterval(pollStatus, 1000);
 })();
 </script>
@@ -2954,6 +3077,70 @@ def dual_measure_delete():
     items = [m for m in load_dual_measurements() if m.get("id") != mid]
     save_dual_measurements(items)
     return {"ok": True}
+
+
+def _s3_target():
+    """Bucket/prefix/region uit s3.json (zelfde bron als app.py)."""
+    s3cfg = _read_json_file(f"{BASE_DIR}/s3.json", {})
+    if not isinstance(s3cfg, dict):
+        s3cfg = {}
+    return (s3cfg.get("s3_bucket"), s3cfg.get("s3_prefix", "vg710-raw"),
+            s3cfg.get("s3_region"))
+
+
+def _s3_client(region):
+    import boto3
+    creds = _read_json_file(AWS_CREDENTIALS_FILE, {})
+    kwargs = {}
+    if region:
+        kwargs["region_name"] = region
+    if isinstance(creds, dict) and creds.get("access_key_id") and creds.get("secret_access_key"):
+        kwargs["aws_access_key_id"] = creds["access_key_id"]
+        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
+    return boto3.client("s3", **kwargs)
+
+
+@dual_app.route("/dual_calibration_save", methods=["POST"])
+def dual_calibration_save():
+    """Schrijf de kalibratiedataset (walspunten + Septentrio/heading) naar S3
+    onder {prefix}/{device_id}/calibration/{ts}.json."""
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+    points = payload.get("points") or {}
+
+    cfg = load_config_data()
+    device_id = cfg.get("device_id") or "onbekend"
+    bucket, prefix, region = _s3_target()
+    if not bucket:
+        return {"ok": False, "error": "Geen S3-bucket geconfigureerd (s3.json)."}, 400
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    record = {
+        "device_id": device_id,
+        "asset_id": cfg.get("asset_id"),
+        "roller": payload.get("roller"),
+        "ts": ts,
+        "points": points,
+    }
+    key = f"{prefix}/{device_id}/calibration/{ts.replace(':', '-')}.json"
+    body = json.dumps(record, indent=2, ensure_ascii=False).encode("utf-8")
+    try:
+        _s3_client(region).put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+    # Laatste kalibratie ook lokaal bewaren.
+    try:
+        with open(f"{BASE_DIR}/calibration_last.json", "w", encoding="utf-8") as f:
+            f.write(body.decode("utf-8"))
+    except Exception:
+        pass
+
+    return {"ok": True, "key": key, "bucket": bucket}
 
 
 if __name__ == "__main__":

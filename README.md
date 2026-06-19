@@ -103,6 +103,21 @@ Wanneer geschreven:
 - **Bij de eerste GPS-fix** — opnieuw, nu mét `lat`/`lon`.
 - **Daarna elke 5 minuten** — met de actuele positie.
 
+### Kalibratie wals → S3
+
+Op de dual-GNSS-pagina (poort 599) staat een schematisch bovenaanzicht van een tandemwals. Per relevant punt wordt de live GNSS-positie ingemeten:
+
+- **LV / RV / LA / RA** — uiteinden van de lijnlast van de voor- en achterrol, ingemeten met de **S599** (orthometrische, gecorrigeerde hoogte).
+- **Septentrio** — referentiepunt + **heading** (HDT, vereist dual-antenne).
+
+Klik een punt in het schema (of "Meet" in de tabel) terwijl je er fysiek staat → de huidige positie wordt eraan gekoppeld. Met **"Opslaan kalibratie naar S3"** wordt de dataset weggeschreven naar:
+
+```
+{S3_PREFIX}/{device_id}/calibration/{ts}.json
+```
+
+(en lokaal bewaard als `calibration_last.json`).
+
 ### Sensor-activatie (NMT Start)
 
 Völkel CANopen-sensoren sturen pas data in de **Operational** state. `app.py` stuurt daarom NMT Start (`000#0100`):

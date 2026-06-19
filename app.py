@@ -267,7 +267,7 @@ GNSS_STATUS = {
     "fix_quality": 0, "fix_label": "Geen fix",
     "lat": None, "lon": None, "satellites": None,
     "hdop": None, "vdop": None, "pdop": None,
-    "altitude": None, "geoid_sep": None,
+    "altitude": None, "geoid_sep": None, "heading": None,
     "acc_lat": None, "acc_lon": None, "acc_alt": None,
     "ts": None,
 }
@@ -445,6 +445,19 @@ def parse_gst(sentence):
         return None
 
 
+def parse_hdt(sentence):
+    """HDT: ware heading (graden). Vereist dual-antenne (Septentrio attitude)."""
+    try:
+        if "*" in sentence:
+            sentence = sentence[: sentence.index("*")]
+        parts = sentence.split(",")
+        if len(parts) < 2 or not parts[0].endswith("HDT"):
+            return None
+        return {"heading": float(parts[1]) if parts[1] else None}
+    except Exception:
+        return None
+
+
 def update_gnss_status(sentence, ts):
     global LATEST_GGA, LATEST_GNSS_UTC
     parsed = None
@@ -461,6 +474,8 @@ def update_gnss_status(sentence, ts):
         parsed = parse_gsa(sentence)
     elif "GST" in sentence:
         parsed = parse_gst(sentence)
+    elif "HDT" in sentence:
+        parsed = parse_hdt(sentence)
 
     if parsed is None:
         return
@@ -1431,7 +1446,7 @@ def nmea_reader_loop(source):
                 if not line:
                     continue
                 ts = now()
-                if "GGA" in line or "GSA" in line or "GST" in line:
+                if "GGA" in line or "GSA" in line or "GST" in line or "HDT" in line:
                     update_gnss_status(line, ts)
                 # Sample-and-hold: per zin-type de laatste zin onthouden. De S3-
                 # capture gebeurt op dezelfde 1 Hz-tik als CAN (zie nmea-blok in
