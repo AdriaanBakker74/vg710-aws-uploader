@@ -237,6 +237,10 @@ S3_NMEA_DUE = {}
 # Wordt op een vast rooster door can_s3_sampler_loop gecaptured en gereset.
 S3_CAN_PENDING = {}
 S3_CAN_PENDING_LOCK = threading.Lock()
+# Idem voor NMEA: per zin-type (GNGGA, GNHDT, ...) de laatst ontvangen zin.
+# Wordt op dezelfde tik als CAN gecaptured zodat S3-records tijd-uitgelijnd zijn.
+S3_NMEA_PENDING = {}
+S3_NMEA_PENDING_LOCK = threading.Lock()
 LOCK = threading.Lock()
 MQTT_CONNECTED = False
 
@@ -762,6 +766,13 @@ def heartbeat():
         time.sleep(HEARTBEAT_INTERVAL)
 
 
+def _is_can_command(can_id):
+    """True voor busmanagement-frames (geen sensordata): NMT-broadcasts (0x000,
+    o.a. de sensor-activatie) en SDO-requests (0x600-0x67F, node-ID/baudrate).
+    Deze worden uit S3 gehouden; in de live-log blijven ze zichtbaar."""
+    return can_id == 0x000 or 0x600 <= can_id <= 0x67F
+
+
 def _nmt_autostart_enabled():
     """Lees de NMT-autostart-toggle vers uit config.json zodat de webinterface
     deze live kan aan/uitzetten zonder container-herstart. Default True."""
@@ -848,8 +859,10 @@ def can_reader_loop():
 
                 # Sample-and-hold: laatste frame per CAN-ID onthouden. De vaste
                 # 1 Hz-tik in can_s3_sampler_loop captured en reset deze buffer.
-                with S3_CAN_PENDING_LOCK:
-                    S3_CAN_PENDING[msg.arbitration_id] = payload
+                # Busmanagement-commando's (NMT/SDO) niet naar S3.
+                if not _is_can_command(msg.arbitration_id):
+                    with S3_CAN_PENDING_LOCK:
+                        S3_CAN_PENDING[msg.arbitration_id] = payload
 
         except Exception as e:
             print(f"CAN reader error on {CAN_CHANNEL}: {e}", flush=True)
@@ -890,12 +903,13 @@ def can_publisher_loop():
 
 
 def can_s3_sampler_loop():
-    """Captured per CAN-ID de laatst ontvangen frame op een vast rooster.
+    """Captured per CAN-ID en per NMEA-zin-type de laatste waarde op een vast rooster.
 
-    Op elke tik (default 1 Hz) wordt per ID de meest recente waarde uit
-    S3_CAN_PENDING gepakt, naar S3 geschreven en de buffer gereset, zodat
-    ongewijzigde data niet opnieuw wordt verstuurd. Een tragere per-ID/groep-
-    rate krijgt voorrang via S3_CAN_DUE; tussen tikken wint de laatste frame.
+    Op elke tik (default 1 Hz) wordt per ID/zin-type de meest recente waarde uit
+    S3_CAN_PENDING / S3_NMEA_PENDING gepakt, naar S3 geschreven en de buffer
+    gereset, zodat ongewijzigde data niet opnieuw wordt verstuurd. CAN en NMEA
+    delen dezelfde tik en zijn daardoor tijd-uitgelijnd. Een tragere per-ID/groep-
+    rate krijgt voorrang via S3_CAN_DUE; tussen tikken wint de laatste waarde.
     """
     next_tick = time.monotonic()
     while True:
@@ -932,6 +946,13 @@ def can_s3_sampler_loop():
                 payload = S3_CAN_PENDING.pop(can_id, None)
             if payload is not None:
                 append_s3_record(payload)
+
+        # NMEA op dezelfde tik: per zin-type de laatste zin capturen + resetten.
+        with S3_NMEA_PENDING_LOCK:
+            nmea_records = list(S3_NMEA_PENDING.values())
+            S3_NMEA_PENDING.clear()
+        for record in nmea_records:
+            append_nmea_record(record)
 
 
 def save_can_latest():
@@ -1326,14 +1347,15 @@ def nmea_reader_loop(source):
                 ts = now()
                 if "GGA" in line or "GSA" in line or "GST" in line:
                     update_gnss_status(line, ts)
-                # S3 per zin-type downsamplen naar ~1 Hz (live-status/NTRIP blijft elke zin).
+                # Sample-and-hold: per zin-type de laatste zin onthouden. De S3-
+                # capture gebeurt op dezelfde 1 Hz-tik als CAN (zie nmea-blok in
+                # can_s3_sampler_loop), zodat NMEA en CAN tijd-uitgelijnd zijn.
+                # Live-status/NTRIP blijven elke zin verwerken.
                 ntype = line.split(",", 1)[0].lstrip("$") or "?"
-                if not _rate_gate(S3_NMEA_DUE, ntype, S3_NMEA_MIN_INTERVAL_SEC, time.monotonic()):
-                    continue
                 with GNSS_LOCK:
                     gnss_utc = LATEST_GNSS_UTC
-                append_nmea_record(
-                    {
+                with S3_NMEA_PENDING_LOCK:
+                    S3_NMEA_PENDING[ntype] = {
                         "device_id": DEVICE_ID,
                         "source": name,
                         "host": host,
@@ -1342,7 +1364,6 @@ def nmea_reader_loop(source):
                         "ts": ts,
                         "gnss_utc": gnss_utc,
                     }
-                )
         except Exception as e:
             print(f"NMEA reader error for {name}: {e}", flush=True)
         finally:
