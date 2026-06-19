@@ -514,17 +514,29 @@ def upload_batch_to_s3(key, batch):
     )
 
 
+def _gnss_position():
+    """Geef (lat, lon, has_fix) uit de huidige GNSS-status."""
+    with GNSS_LOCK:
+        lat = GNSS_STATUS.get("lat")
+        lon = GNSS_STATUS.get("lon")
+        has_fix = GNSS_STATUS.get("fix_quality", 0) > 0 and lat is not None
+    return lat, lon, has_fix
+
+
 def write_device_startup_record():
-    """Schrijf bij elke opstart een apparaatregel naar een vaste S3-key
-    (devices/{device_id}.njson). De vorige opstartregel wordt overschreven,
-    zodat de bucket een actuele device-registry bevat."""
+    """Schrijf een apparaatregel naar een vaste S3-key (devices/{device_id}.njson).
+    De vorige regel wordt overschreven, zodat de bucket een actuele device-
+    registry bevat. Bevat lat/lon zodra er een GPS-fix is."""
     if not S3_CLIENT or not S3_BUCKET:
         return
     key = f"{S3_PREFIX}/devices/{DEVICE_ID}.njson"
+    lat, lon, _ = _gnss_position()
     record = {
         "device_id": DEVICE_ID,
         "asset_id": cfg.get("asset_id"),
         "app_version": os.environ.get("APP_VERSION", "onbekend"),
+        "lat": lat,
+        "lon": lon,
         "ts": now(),
     }
     body = json.dumps(record, separators=(",", ":")) + "\n"
@@ -535,9 +547,30 @@ def write_device_startup_record():
             Body=body.encode("utf-8"),
             ContentType="application/x-ndjson",
         )
-        print(f"Wrote device startup record to s3://{S3_BUCKET}/{key}", flush=True)
+        print(f"Wrote device record to s3://{S3_BUCKET}/{key} (lat={lat}, lon={lon})", flush=True)
     except Exception as e:
-        print(f"Device startup record failed: {e}", flush=True)
+        print(f"Device record failed: {e}", flush=True)
+
+
+def device_record_loop():
+    """Schrijf de apparaatregel bij opstart, opnieuw zodra er voor het eerst een
+    GPS-fix is (zodat lat/lon erin komen), en daarna elke 5 minuten met de
+    actuele positie. Steeds dezelfde S3-key, dus altijd één actuele regel."""
+    write_device_startup_record()
+    last_write = time.monotonic()
+    _, _, had_fix = _gnss_position()
+    while True:
+        time.sleep(5)
+        _, _, has_fix = _gnss_position()
+        # Extra schrijfactie zodra de GPS-fix net beschikbaar komt.
+        if has_fix and not had_fix:
+            write_device_startup_record()
+            last_write = time.monotonic()
+        had_fix = has_fix
+        # Daarna elke 5 minuten herhalen met de actuele lat/lon.
+        if time.monotonic() - last_write >= 300:
+            write_device_startup_record()
+            last_write = time.monotonic()
 
 
 def enforce_queue_limit():
@@ -1409,9 +1442,9 @@ def nmea_reader_loop(source):
 
 ensure_queue_dirs()
 
-# Apparaatregel bij opstart naar S3 (overschrijft de vorige). In een thread
-# zodat een trage/ontbrekende netwerkverbinding de opstart niet blokkeert.
-threading.Thread(target=write_device_startup_record, daemon=True).start()
+# Apparaatregel naar S3: bij opstart, bij eerste GPS-fix en elke 5 min. In een
+# thread zodat een trage/ontbrekende netwerkverbinding de opstart niet blokkeert.
+threading.Thread(target=device_record_loop, daemon=True).start()
 
 threading.Thread(target=heartbeat, daemon=True).start()
 threading.Thread(target=can_reader_loop, daemon=True).start()

@@ -83,19 +83,25 @@ Deze blijven wel zichtbaar in de live CAN-log voor diagnose.
 - Records worden gebufferd en geflusht bij `s3_batch_size` records óf na `s3_flush_interval_sec` seconden (apart instelbaar voor CAN en NMEA).
 - Bij geen netwerk worden batches op schijf gequeued (`/data/vgapp/s3_queue`) en later geüpload.
 
-### Apparaatregel bij opstart
+### Apparaatregel (device-registry)
 
-Bij **elke opstart** van de modem schrijft `app.py` één regel naar een vaste S3-key:
+`app.py` schrijft één regel naar een vaste S3-key:
 
 ```
 {S3_PREFIX}/devices/{device_id}.njson
 ```
 
-De vorige opstartregel wordt **overschreven** (geen historie), zodat de bucket een actuele device-registry bevat:
+De vorige regel wordt steeds **overschreven** (geen historie), zodat de bucket altijd één actuele regel per device bevat:
 
 ```json
-{"device_id":"VF710...","asset_id":"CROW...","app_version":"v1.x.x","ts":"2026-06-19T09:41:00+00:00"}
+{"device_id":"VF710...","asset_id":"CROW...","app_version":"v1.x.x","lat":52.1,"lon":5.2,"ts":"2026-06-19T09:41:00+00:00"}
 ```
+
+Wanneer geschreven:
+
+- **Bij opstart** — direct (lat/lon nog `null` als er nog geen fix is).
+- **Bij de eerste GPS-fix** — opnieuw, nu mét `lat`/`lon`.
+- **Daarna elke 5 minuten** — met de actuele positie.
 
 ### Sensor-activatie (NMT Start)
 
