@@ -230,6 +230,10 @@ LATEST_MESSAGES = {}
 LAST_PUBLISHED = {}
 S3_CAN_DUE = {}
 S3_NMEA_DUE = {}
+# Sample-and-hold buffer voor S3: per CAN-ID de laatst ontvangen frame.
+# Wordt op een vast rooster door can_s3_sampler_loop gecaptured en gereset.
+S3_CAN_PENDING = {}
+S3_CAN_PENDING_LOCK = threading.Lock()
 LOCK = threading.Lock()
 MQTT_CONNECTED = False
 
@@ -823,16 +827,10 @@ def can_reader_loop():
                         "ts": ts,
                     })
 
-                # S3 downsamplen: per CAN-ID ~1 record per interval op een vast rooster.
-                # Default 1 Hz; een tragere per-ID/groep-rate krijgt voorrang.
-                s3_interval = S3_CAN_MIN_INTERVAL_SEC
-                cfg_rate = CAN_RATE_MAP.get(msg.arbitration_id)
-                if cfg_rate is None and _group:
-                    cfg_rate = _group.get("upload_rate_sec")
-                if cfg_rate is not None and cfg_rate > s3_interval:
-                    s3_interval = cfg_rate
-                if _rate_gate(S3_CAN_DUE, msg.arbitration_id, s3_interval, time.monotonic()):
-                    append_s3_record(payload)
+                # Sample-and-hold: laatste frame per CAN-ID onthouden. De vaste
+                # 1 Hz-tik in can_s3_sampler_loop captured en reset deze buffer.
+                with S3_CAN_PENDING_LOCK:
+                    S3_CAN_PENDING[msg.arbitration_id] = payload
 
         except Exception as e:
             print(f"CAN reader error on {CAN_CHANNEL}: {e}", flush=True)
@@ -870,6 +868,51 @@ def can_publisher_loop():
             LAST_PUBLISHED[can_id] = now_ts
 
         time.sleep(0.1)
+
+
+def can_s3_sampler_loop():
+    """Captured per CAN-ID de laatst ontvangen frame op een vast rooster.
+
+    Op elke tik (default 1 Hz) wordt per ID de meest recente waarde uit
+    S3_CAN_PENDING gepakt, naar S3 geschreven en de buffer gereset, zodat
+    ongewijzigde data niet opnieuw wordt verstuurd. Een tragere per-ID/groep-
+    rate krijgt voorrang via S3_CAN_DUE; tussen tikken wint de laatste frame.
+    """
+    next_tick = time.monotonic()
+    while True:
+        next_tick += S3_CAN_MIN_INTERVAL_SEC
+        sleep_for = next_tick - time.monotonic()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        else:
+            # Achtergelopen (lange gap/load): rooster opnieuw verankeren.
+            next_tick = time.monotonic()
+
+        mono = time.monotonic()
+        with S3_CAN_PENDING_LOCK:
+            pending_ids = list(S3_CAN_PENDING.keys())
+
+        for can_id in pending_ids:
+            # Bepaal interval voor deze ID: default 1 Hz, trager indien geconfigureerd.
+            s3_interval = S3_CAN_MIN_INTERVAL_SEC
+            cfg_rate = CAN_RATE_MAP.get(can_id)
+            if cfg_rate is None:
+                group = find_can_group(can_id)
+                if group:
+                    cfg_rate = group.get("upload_rate_sec")
+            if cfg_rate is not None and cfg_rate > s3_interval:
+                s3_interval = cfg_rate
+
+            # Tragere ID's alleen op hun eigen due-moment doorlaten; latere tikken
+            # laten de pending-waarde staan zodat hij blijft verversen.
+            if s3_interval > S3_CAN_MIN_INTERVAL_SEC:
+                if not _rate_gate(S3_CAN_DUE, can_id, s3_interval, mono):
+                    continue
+
+            with S3_CAN_PENDING_LOCK:
+                payload = S3_CAN_PENDING.pop(can_id, None)
+            if payload is not None:
+                append_s3_record(payload)
 
 
 def save_can_latest():
@@ -1303,6 +1346,7 @@ ensure_queue_dirs()
 threading.Thread(target=heartbeat, daemon=True).start()
 threading.Thread(target=can_reader_loop, daemon=True).start()
 threading.Thread(target=can_publisher_loop, daemon=True).start()
+threading.Thread(target=can_s3_sampler_loop, daemon=True).start()
 threading.Thread(target=s3_flush_loop, daemon=True).start()
 threading.Thread(target=s3_upload_worker, daemon=True).start()
 
