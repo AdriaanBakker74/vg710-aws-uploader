@@ -95,6 +95,9 @@ S3_QUEUE_MAX_BYTES = int(cfg.get("s3_queue_max_mb", 500)) * 1024 * 1024
 S3_CAN_MIN_INTERVAL_SEC = float(cfg.get("s3_can_min_interval_sec", 1.0))
 # Idem voor NMEA, per zin-type (GNGGA, GNHDT, ...). Default 1.0s = 1 Hz per type.
 S3_NMEA_MIN_INTERVAL_SEC = float(cfg.get("s3_nmea_min_interval_sec", 1.0))
+# Interval tussen periodieke NMT Start-broadcasts (sensoren activeren). De aan/uit-
+# toggle (nmt_autostart_enabled) wordt live uit config.json gelezen, zie helper.
+NMT_AUTOSTART_INTERVAL_SEC = int(cfg.get("nmt_autostart_interval_sec", 30))
 
 CAN_RATES = cfg.get("can_upload_rates", [])
 NTRIP_CFG = cfg.get("ntrip", {})
@@ -759,6 +762,16 @@ def heartbeat():
         time.sleep(HEARTBEAT_INTERVAL)
 
 
+def _nmt_autostart_enabled():
+    """Lees de NMT-autostart-toggle vers uit config.json zodat de webinterface
+    deze live kan aan/uitzetten zonder container-herstart. Default True."""
+    try:
+        with open(f"{BASE}/config.json", encoding="utf-8") as f:
+            return bool(json.load(f).get("nmt_autostart_enabled", True))
+    except Exception:
+        return True
+
+
 def can_reader_loop():
     nmt_start = can.Message(arbitration_id=0x000, data=[0x01, 0x00], is_extended_id=False)
     while True:
@@ -769,17 +782,27 @@ def can_reader_loop():
             print("CAN opened", flush=True)
 
             # Eenmalige NMT Start bij bus-bring-up zodat sensoren bij aanschakelen
-            # direct data sturen. Geen periodieke herhaling meer: dat vervuilde de
-            # bus. Handmatig opnieuw activeren kan via de webinterface-knop
-            # "Sensoren activeren" (/volkel_activate).
+            # direct data sturen.
             try:
                 bus.send(nmt_start)
                 print("Sent NMT Start broadcast", flush=True)
             except Exception as e:
                 print(f"NMT broadcast failed: {e}", flush=True)
+            last_nmt = time.time()
 
             while True:
                 msg = bus.recv(timeout=1.0)
+
+                # Periodieke NMT Start; aan/uit via config (nmt_autostart_enabled,
+                # default True). Vers ingelezen zodat de webinterface-toggle direct
+                # werkt zonder container-herstart.
+                if time.time() - last_nmt > NMT_AUTOSTART_INTERVAL_SEC:
+                    if _nmt_autostart_enabled():
+                        try:
+                            bus.send(nmt_start)
+                        except Exception as e:
+                            print(f"Periodic NMT failed: {e}", flush=True)
+                    last_nmt = time.time()
 
                 if msg is None:
                     continue

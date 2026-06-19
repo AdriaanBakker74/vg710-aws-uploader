@@ -884,6 +884,14 @@ HTML = """
         <span id="volkel-scan-status" class="muted" style="font-size:13px;"></span>
       </div>
 
+      <form method="post" action="/save_nmt_autostart" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px;font-size:13px;">
+        <label style="display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" name="enabled" value="1" {% if nmt_autostart %}checked{% endif %} style="width:auto;accent-color:var(--accent);">
+          Sensoren automatisch activeren (NMT Start elke 30s)
+        </label>
+        <button type="submit">Opslaan</button>
+      </form>
+
       <div id="volkel-unassigned" style="display:none;margin-bottom:16px;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;font-size:13px;">
       </div>
 
@@ -2074,6 +2082,7 @@ def render_page(shell_command="", shell_output="No command executed yet."):
         gnss=gnss_status_data(),
         ntrip=ntrip_config(),
         s3_settings=s3_settings(),
+        nmt_autostart=cfg.get("nmt_autostart_enabled", True),
         device_id=cfg.get("device_id"),
         asset_id=cfg.get("asset_id"),
         app_version=os.environ.get("APP_VERSION", "onbekend"),
@@ -2450,6 +2459,16 @@ def volkel_activate():
         "output": output,
         "message": "NMT Start verstuurd — alle sensoren geactiveerd (Operational).",
     }
+
+
+@app.route("/save_nmt_autostart", methods=["POST"])
+def save_nmt_autostart():
+    """Sla de aan/uit-toggle voor periodieke NMT Start (sensor-autostart) op.
+    app.py leest nmt_autostart_enabled live uit config.json."""
+    cfg = load_config_data()
+    cfg["nmt_autostart_enabled"] = request.form.get("enabled") == "1"
+    save_config_data(cfg)
+    return redirect(url_for("index"))
 
 
 SENSOR_TYPES = {
