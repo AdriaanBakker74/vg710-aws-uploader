@@ -1468,7 +1468,7 @@ HTML = """
             '<select id="vk-nid-cur-' + typeKey + '">' + _renderNodeOptions(nodesForId, true) + '</select>' +
             '<label style="font-size:12px;font-weight:600;">Nieuw node-ID</label>' +
             '<select id="vk-nid-new-' + typeKey + '">' + newIdOpts + '</select>' +
-            '<button type="button" onclick="volkelChangeId(\'' + typeKey + '\')">Wijzig node-ID</button>' +
+            '<button type="button" onclick="volkelChangeId(\\'' + typeKey + '\\')">Wijzig node-ID</button>' +
           '</div>' +
 
           '<div style="display:grid;grid-template-columns:auto 1fr auto 1fr auto;gap:8px;align-items:end;">' +
@@ -1476,7 +1476,7 @@ HTML = """
             '<select id="vk-baud-node-' + typeKey + '">' + _renderNodeOptions(nodesForBaud, true) + '</select>' +
             '<label style="font-size:12px;font-weight:600;">Nieuwe baudrate</label>' +
             '<select id="vk-baud-val-' + typeKey + '">' + _renderBaudrateOptions() + '</select>' +
-            '<button type="button" onclick="volkelChangeBaudrate(\'' + typeKey + '\')">Wijzig baudrate</button>' +
+            '<button type="button" onclick="volkelChangeBaudrate(\\'' + typeKey + '\\')">Wijzig baudrate</button>' +
           '</div>' +
         '</div>'
       );
