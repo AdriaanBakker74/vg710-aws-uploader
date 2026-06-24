@@ -357,19 +357,33 @@ modem-webinterface (poort 8080) &mdash; niet via docker-compose. Stappen:</p>
       <code>vg710-web-aws-vX.Y.Z.tar</code> (zelfde tar als modem 1/2).</li>
 </ul>
 
-<h3>2. Container aanmaken</h3>
+<h3>2. Volume aanmaken <span class="step">(EERST &mdash; v&oacute;&oacute;r de container)</span></h3>
+<ul>
+  <li>Docker Manager &rarr; <b>Volumes</b> &rarr; <b>Add volume</b>.</li>
+  <li>Name: <code>vgdata</code> &mdash; Driver: <code>local</code>.</li>
+</ul>
+<p class="step">Let op het verschil: de <b>volume-naam</b> is <code>vgdata</code>; het
+<b>mount-pad</b> in de container is <code>/data/vgapp</code>. De <code>vgapp</code>
+zit alleen in het pad, niet in de volume-naam.</p>
+
+<h3>3. Container aanmaken</h3>
 <p class="step">Exact dezelfde instellingen als modem 1/2:</p>
 <table>
-  <tr><td class="k">Network mode</td><td><code>host</code> <span class="step">(vereist voor CAN-bus can0 + NTRIP-proxy poort 7791)</span></td></tr>
+  <tr><td class="k">Network</td><td><code>host</code> <span class="step">(vereist voor CAN-bus can0 + NTRIP-proxy poort 7791)</span></td></tr>
+  <tr><td class="k">Hostname</td><td>leeg laten (of het serienummer) &mdash; <span class="step">NIET de volume-naam</span></td></tr>
   <tr><td class="k">Privileged</td><td><code>aan</code></td></tr>
   <tr><td class="k">Restart policy</td><td><code>unless-stopped</code></td></tr>
-  <tr><td class="k">Volume</td><td>named volume <code>vgdata</code> (local) &rarr; <code>/data/vgapp</code> <span class="step">(GEEN host bind mount, GEEN docker.sock)</span></td></tr>
-  <tr><td class="k">Env-var</td><td><code>AWS_ACCESS_KEY_ID=&lt;vg710-uploader key&gt;</code></td></tr>
-  <tr><td class="k">Env-var</td><td><code>AWS_SECRET_ACCESS_KEY=&lt;vg710-uploader secret&gt;</code></td></tr>
-  <tr><td class="k">Env-var</td><td><code>AWS_DEFAULT_REGION={env_region}</code></td></tr>
+  <tr><td class="k">Volume mapping</td><td>container <code>/data/vgapp</code> &rarr; volume <code>vgdata</code> &middot; <b>Writable</b> <span class="step">(GEEN Bind, GEEN Read-only, GEEN docker.sock)</span></td></tr>
+</table>
+<p class="step"><b>Env-variabelen</b> (tab Env):</p>
+<table>
+  <tr><td class="k">APP_VERSION</td><td><code>1.1.58</code> <span class="step">(versienummer van de geladen image &mdash; verschijnt in de web-UI)</span></td></tr>
+  <tr><td class="k">AWS_ACCESS_KEY_ID</td><td><code>&lt;vg710-uploader key&gt;</code></td></tr>
+  <tr><td class="k">AWS_SECRET_ACCESS_KEY</td><td><code>&lt;vg710-uploader secret&gt;</code></td></tr>
+  <tr><td class="k">AWS_DEFAULT_REGION</td><td><code>{env_region}</code></td></tr>
 </table>
 
-<h3>3. Config + certs op het modem zetten</h3>
+<h3>4. Config + certs op het modem zetten</h3>
 <p class="step">{files_intro}</p>
 <ul class="files">
   <li>config.json</li>
@@ -381,7 +395,7 @@ modem-webinterface (poort 8080) &mdash; niet via docker-compose. Stappen:</p>
 zodra <code>config.json</code> + de 3 certs aanwezig zijn. <code>web.py</code>
 (poort 8080, default admin/admin) komt altijd meteen op.</p>
 
-<h3>4. Container starten &amp; controleren</h3>
+<h3>5. Container starten &amp; controleren</h3>
 <ul>
   <li>Start de container; check in de webinterface (poort 8080) dat MQTT verbindt en
       GNSS/CAN data binnenkomt.</li>
