@@ -127,10 +127,16 @@ PAGE = """<!DOCTYPE html>
   .step {{ color: #94a3b8; font-size: 12px; }}
   a {{ color: #60a5fa; }}
   .files li {{ font-family: ui-monospace, monospace; font-size: 12.5px; }}
+  .notice {{ background: #422006; border: 1px solid #b45309; color: #fde68a;
+            border-radius: 10px; padding: 14px 16px; margin-bottom: 22px;
+            font-size: 14px; line-height: 1.5; }}
+  .notice b {{ color: #fff; }}
 </style></head>
 <body><div class="wrap">
 <h1>VG710 modem provisioning</h1>
 <p class="sub">AWS IoT Core &middot; account {account} &middot; region {region}</p>
+<div class="notice">&#9888;&#65039; Verbind eerst met het 5G-netwerk &mdash; SSID:
+<b>unicontrol</b>. Zorg dat het modem <b>online</b> is voordat je verder gaat.</div>
 {body}
 </div></body></html>
 """
