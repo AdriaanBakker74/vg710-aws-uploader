@@ -148,6 +148,7 @@ FORM = """
   <input type="text" name="out_dir" placeholder="{default_dir}" value="{out_dir}" required>
 
   <button type="submit">Provision modem</button>
+  <a href="{docker_url}"><button type="button" style="background:#475569;margin-left:10px;">Toon alleen Docker-instructies</button></a>
 </div>
 </form>
 {error}
@@ -177,6 +178,7 @@ def form_page(device_id="", asset_id="", out_dir="", error_html=""):
     return render(
         FORM.format(
             action=url_for("provision"),
+            docker_url=url_for("docker_page"),
             device_id=device_id,
             asset_id=asset_id,
             out_dir=out_dir,
@@ -190,6 +192,17 @@ def form_page(device_id="", asset_id="", out_dir="", error_html=""):
 @app.route("/")
 def index():
     return form_page()
+
+
+@app.route("/docker")
+def docker_page():
+    body = ('<div class="card"><h2>Docker-instructies</h2>'
+            '<p class="step">Algemene uitrolstappen &mdash; gebruik dit als de certs '
+            'al bestaan (bv. modem 3) en je alleen de container nog moet aanmaken.</p>'
+            '</div>'
+            + docker_instructions()
+            + '<p><a href="/">&larr; Terug naar provisioning</a></p>')
+    return render(body)
 
 
 @app.route("/provision", methods=["POST"])
@@ -282,9 +295,7 @@ def result_page(device_id, asset_id, out_dir, cert_arn, steps, written):
     )
     files = "".join("<li>%s</li>" % f for f in written)
     cert_id = cert_arn.split("/")[-1]
-    env_region = REGION
-
-    docker = """
+    done = """
 <div class="card">
 <h2>Wat is er gedaan</h2>
 <table>
@@ -296,9 +307,41 @@ def result_page(device_id, asset_id, out_dir, cert_arn, steps, written):
 <h3>Weggeschreven bestanden &mdash; <code>{out_dir}</code></h3>
 <ul class="files">{files}</ul>
 </div>
+""".format(
+        device_id=device_id, asset_id=asset_id, cert_arn=cert_arn, rows=rows,
+        out_dir=out_dir, files=files,
+    )
 
+    header = ('<div class="card ok"><span class="badge ok">GELUKT</span> '
+              'Modem <code>%s</code> is geprovisioneerd in AWS IoT Core.</div>'
+              % device_id)
+    return header + done + docker_instructions(device_id, out_dir) \
+        + '<p><a href="/">&larr; Nog een modem provisionen</a></p>'
+
+
+def docker_instructions(device_id=None, out_dir=None):
+    """Docker-uitrolstappen. Generiek als device_id/out_dir niet bekend zijn
+    (los opvraagbaar via de knop op het formulier)."""
+    if out_dir:
+        files_intro = ("Plaats de zojuist weggeschreven bestanden uit "
+                       "<code>%s</code> in het named volume onder "
+                       "<code>/data/vgapp/</code> op het modem:" % out_dir)
+    else:
+        files_intro = ("Plaats de bestanden uit de certs-directory van dit modem "
+                       "(<code>config.json</code> + de 3 certs) in het named volume "
+                       "onder <code>/data/vgapp/</code> op het modem:")
+    if device_id:
+        verify = ("Verifieer in AWS: thing <code>%s</code> komt online; S3-objecten "
+                  "verschijnen onder "
+                  "<code>s3://bmc-vg710-raw-eun1/vg710-raw/</code> met dit device_id."
+                  % device_id)
+    else:
+        verify = ("Verifieer in AWS: het thing van dit modem komt online; S3-objecten "
+                  "verschijnen onder "
+                  "<code>s3://bmc-vg710-raw-eun1/vg710-raw/</code> met dit device_id.")
+    return """
 <div class="card">
-<h2>Wat moet je nog doen: container op het modem</h2>
+<h2>Docker: container op het modem aanmaken</h2>
 <p class="step">De productie-uitrol gebeurt via de <b>InHand Docker Manager</b> in de
 modem-webinterface (poort 8080) &mdash; niet via docker-compose. Stappen:</p>
 
@@ -321,8 +364,7 @@ modem-webinterface (poort 8080) &mdash; niet via docker-compose. Stappen:</p>
 </table>
 
 <h3>3. Config + certs op het modem zetten</h3>
-<p class="step">Plaats de zojuist weggeschreven bestanden in het named volume onder
-<code>/data/vgapp/</code> op het modem:</p>
+<p class="step">{files_intro}</p>
 <ul class="files">
   <li>config.json</li>
   <li>device.pem.crt</li>
@@ -337,24 +379,13 @@ zodra <code>config.json</code> + de 3 certs aanwezig zijn. <code>web.py</code>
 <ul>
   <li>Start de container; check in de webinterface (poort 8080) dat MQTT verbindt en
       GNSS/CAN data binnenkomt.</li>
-  <li>Verifieer in AWS: thing <code>{device_id}</code> komt online; S3-objecten
-      verschijnen onder <code>s3://bmc-vg710-raw-eun1/vg710-raw/</code> met dit device_id.</li>
+  <li>{verify}</li>
 </ul>
 <p class="step">S3-bucket en IAM-user <code>vg710-uploader</code> worden gedeeld door alle
 modems &mdash; daar hoef je niets aan te wijzigen. Alleen de IoT-identiteit (thing + cert)
-is per modem uniek, en die is hierboven aangemaakt.</p>
+is per modem uniek.</p>
 </div>
-
-<p><a href="/">&larr; Nog een modem provisionen</a></p>
-""".format(
-        device_id=device_id, asset_id=asset_id, cert_arn=cert_arn, rows=rows,
-        out_dir=out_dir, files=files, env_region=env_region, cert_id=cert_id,
-    )
-
-    header = ('<div class="card ok"><span class="badge ok">GELUKT</span> '
-              'Modem <code>%s</code> is geprovisioneerd in AWS IoT Core.</div>'
-              % device_id)
-    return header + docker
+""".format(env_region=REGION, files_intro=files_intro, verify=verify)
 
 
 if __name__ == "__main__":
