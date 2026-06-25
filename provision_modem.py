@@ -377,7 +377,7 @@ zit alleen in het pad, niet in de volume-naam.</p>
 </table>
 <p class="step"><b>Env-variabelen</b> (tab Env):</p>
 <table>
-  <tr><td class="k">APP_VERSION</td><td><code>1.1.58</code> <span class="step">(versienummer van de geladen image &mdash; verschijnt in de web-UI)</span></td></tr>
+  <tr><td class="k">APP_VERSION</td><td><code>1.1.59</code> <span class="step">(versienummer van de geladen image &mdash; verschijnt in de web-UI)</span></td></tr>
   <tr><td class="k">AWS_ACCESS_KEY_ID</td><td><code>&lt;vg710-uploader key&gt;</code></td></tr>
   <tr><td class="k">AWS_SECRET_ACCESS_KEY</td><td><code>&lt;vg710-uploader secret&gt;</code></td></tr>
   <tr><td class="k">AWS_DEFAULT_REGION</td><td><code>{env_region}</code></td></tr>
