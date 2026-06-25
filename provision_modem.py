@@ -383,17 +383,25 @@ zit alleen in het pad, niet in de volume-naam.</p>
   <tr><td class="k">AWS_DEFAULT_REGION</td><td><code>{env_region}</code></td></tr>
 </table>
 
-<h3>4. Config + certs op het modem zetten</h3>
-<p class="step">{files_intro}</p>
+<h3>4. Config + certs op het modem zetten <span class="step">(via web-UI &mdash; aanbevolen)</span></h3>
+<p class="step">Open de web-UI (poort 8080) en gebruik de upload-sectie bovenaan
+(toont &#10004;/&#10008; voor config, crt, key, ca). Upload de bestanden uit de
+certs-directory van dit modem:</p>
 <ul class="files">
-  <li>config.json</li>
-  <li>device.pem.crt</li>
-  <li>private.pem.key</li>
-  <li>AmazonRootCA1.pem</li>
+  <li>config.json &nbsp;<span class="step">&rarr; /data/vgapp/config.json</span></li>
+  <li>device.pem.crt &nbsp;<span class="step">&rarr; /data/vgapp/<b>certs/</b>device.pem.crt</span></li>
+  <li>private.pem.key &nbsp;<span class="step">&rarr; /data/vgapp/<b>certs/</b>private.pem.key</span></li>
+  <li>AmazonRootCA1.pem &nbsp;<span class="step">&rarr; /data/vgapp/<b>certs/</b>AmazonRootCA1.pem</span></li>
 </ul>
+<p class="step"><b>Let op:</b> de 3 certs horen in de submap <code>/data/vgapp/certs/</code>,
+NIET los in <code>/data/vgapp/</code>. De web-UI-upload (<code>/upload_cert</code>) zet ze
+daar automatisch neer. Plaats je ze handmatig in het volume, gebruik dan zelf de
+<code>certs/</code>-submap. Upload-formulieren zijn plain HTML POST &mdash; werken ook
+zonder werkende JS.</p>
 <p class="step">De boot-gate (<code>entrypoint.sh</code>) start <code>app.py</code> pas
-zodra <code>config.json</code> + de 3 certs aanwezig zijn. <code>web.py</code>
-(poort 8080, default admin/admin) komt altijd meteen op.</p>
+zodra <code>/data/vgapp/config.json</code> + de 3 certs in <code>/data/vgapp/certs/</code>
+aanwezig zijn (checkt elke 3s). <code>web.py</code> (poort 8080, default admin/admin)
+komt altijd meteen op.</p>
 
 <h3>5. Container starten &amp; controleren</h3>
 <ul>
